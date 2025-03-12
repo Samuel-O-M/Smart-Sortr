@@ -1,0 +1,20 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Logs
+logs/
+*.log
+*.out
+
+# Git & IDE-specific files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Build and cache
+build/
+dist/

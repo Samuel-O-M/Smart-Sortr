@@ -1,0 +1,9 @@
+version: "3.8"
+services:
+  backend:
+    build: ./backend
+    container_name: smart-sortr-backend
+    ports:
+      - "5000:5000"
+    volumes:
+      - "C:/Users/Samu/Desktop/folder:/app/working_folder"
