@@ -4,10 +4,10 @@ function Home() {
   const BACKEND_URL = 'http://127.0.0.1:5000';
   const [image, setImage] = useState(null); // { image_file, image_data, mime_type }
   const [predictions, setPredictions] = useState(null);
-  const [pendingActions, setPendingActions] = useState([]); // list of { image, target_folder }
-  const [folders, setFolders] = useState([]); // list of folder names
-  const [showModal, setShowModal] = useState(false);
+  const [folders, setFolders] = useState([]); // list of folder names from classification
   const [error, setError] = useState(null);
+  const [pendingStack, setPendingStack] = useState([]);
+  const [showCommitModal, setShowCommitModal] = useState(false);
 
   // Fetch the current image from /image endpoint
   const fetchImage = async () => {
@@ -28,6 +28,19 @@ function Home() {
     }
   };
 
+  // Fetch pending actions stack
+  const fetchStack = async () => {
+    try {
+      const response = await fetch(`${BACKEND_URL}/stack`);
+      if (response.ok) {
+        const data = await response.json();
+        setPendingStack(data.stack);
+      }
+    } catch (err) {
+      console.error('Error fetching stack:', err);
+    }
+  };
+
   // Classify the current image using /classify endpoint
   const classifyImage = async (imageFile) => {
     try {
@@ -44,7 +57,6 @@ function Home() {
       } else {
         const data = await response.json();
         setPredictions(data.predictions);
-        // Use folder names from the classification result
         setFolders(Object.keys(data.predictions));
         setError(null);
       }
@@ -53,74 +65,89 @@ function Home() {
     }
   };
 
-  // Fetch image on mount
+  // Initial fetch on mount
   useEffect(() => {
     fetchImage();
+    fetchStack();
   }, []);
 
-  // Once an image is loaded, automatically classify it
+  // When a new image is loaded, classify it
   useEffect(() => {
     if (image && image.image_file) {
       classifyImage(image.image_file);
     }
   }, [image]);
 
-  // Record an update action when a folder is clicked
-  const handleFolderClick = (folder) => {
-    if (image && image.image_file) {
-      setPendingActions(prev => [...prev, { image: image.image_file, target_folder: folder }]);
-    }
-  };
-
-  // Commit pending update actions to the backend via /update endpoint
-  const commitChanges = async () => {
+  // Handle folder click: add the pending action
+  const handleFolderClick = async (folder) => {
+    if (!image || !image.image_file) return;
     try {
       const response = await fetch(`${BACKEND_URL}/update`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(pendingActions)
+        body: JSON.stringify({ image: image.image_file, target_folder: folder })
       });
       if (!response.ok) {
         const err = await response.json();
-        alert('Error committing changes: ' + (err.error || 'Unknown error'));
+        alert('Error adding action: ' + (err.error || 'Unknown error'));
       } else {
         const result = await response.json();
-        console.log('Commit result:', result);
-        // Clear pending actions and fetch the next image
-        setPendingActions([]);
+        console.log('Pending action added:', result);
+        // Refresh the pending actions and fetch the next image
+        fetchStack();
         fetchImage();
       }
     } catch (err) {
-      alert('Error committing changes');
-    } finally {
-      setShowModal(false);
+      alert('Error adding action');
     }
   };
 
-  const addFolder = async () => {
-    const folderName = prompt("Enter new folder name:");
-    if (!folderName) return;
-    
+  // Undo the last pending action
+  const handleUndo = async () => {
     try {
-      const response = await fetch("http://localhost:5000/folder", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ operation: "create", folder_name: folderName })
+      const response = await fetch(`${BACKEND_URL}/undo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
       });
-      
       const data = await response.json();
-      // Display the exact response from the endpoint as a formatted JSON string.
-      alert(JSON.stringify(data, null, 2));
-      
-      // Optionally, if the folder was created successfully, update the folder list.
-      if (response.ok) {
-        setFolders(prev => [...prev, folderName]);
+      if (!response.ok) {
+        alert('Error undoing action: ' + (data.error || 'Unknown error'));
+      } else {
+        console.log('Undo result:', data);
+        // Set the undone image as the current image if available
+        if (data.restored_image) {
+          setImage(data.restored_image);
+        } else {
+          fetchImage();
+        }
+        fetchStack();
       }
-    } catch (error) {
-      alert("Error creating folder: " + error.message);
+    } catch (err) {
+      alert('Error undoing action');
     }
   };
-
+  
+  // Commit all pending actions
+  const handleCommit = async () => {
+    try {
+      const response = await fetch(`${BACKEND_URL}/commit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      if (!response.ok) {
+        const err = await response.json();
+        alert('Error committing actions: ' + (err.error || 'Unknown error'));
+      } else {
+        const result = await response.json();
+        console.log('Commit result:', result);
+        alert('Commit successful.');
+        fetchStack();
+        fetchImage();
+      }
+    } catch (err) {
+      alert('Error committing actions');
+    }
+  };
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 p-8">
@@ -152,15 +179,23 @@ function Home() {
         ) : (
           <div>No image available</div>
         )}
-        <button 
-          className="w-full bg-purple-500 hover:bg-purple-600 text-white py-2 rounded mb-4"
-          onClick={() => setShowModal(true)}
-          disabled={pendingActions.length === 0}
-        >
-          Commit Changes ({pendingActions.length})
-        </button>
+        <div className="flex justify-between mb-4">
+          <button 
+            className="w-1/3 bg-red-500 hover:bg-red-600 text-white py-2 rounded mr-2"
+            onClick={handleUndo}
+          >
+            Undo
+          </button>
+          <button 
+            className="w-1/3 bg-green-500 hover:bg-green-600 text-white py-2 rounded"
+            onClick={() => setShowCommitModal(true)}
+          >
+            Commit
+          </button>
+        </div>
       </main>
-      {/* Scrollable folder row */}
+      
+      {/* Folder buttons from classification predictions */}
       <div className="w-full max-w-md mt-4 overflow-x-auto">
         <div className="flex space-x-4">
           {folders.map(folder => (
@@ -172,37 +207,55 @@ function Home() {
               {folder}
             </button>
           ))}
-          <button 
-            className="px-4 py-2 bg-green-500 hover:bg-green-600 text-white rounded whitespace-nowrap"
-            onClick={addFolder}
-          >
-            + Add Folder
-          </button>
         </div>
       </div>
+      
+      {/* Pending Actions Stack */}
+      <section className="w-full max-w-md mt-6 bg-white shadow-md rounded-lg p-4">
+        <h2 className="text-xl font-semibold mb-2">Pending Actions</h2>
+        {pendingStack.length === 0 ? (
+          <p>No pending actions</p>
+        ) : (
+          <ul>
+            {pendingStack.map((action, index) => (
+              <li key={index} className="flex items-center space-x-4 mb-2">
+                {action.preview && (
+                  <img 
+                    src={`data:${action.mime_type};base64,${action.preview}`}
+                    alt={action.image}
+                    className="w-16 h-16 object-cover rounded"
+                  />
+                )}
+                <div>
+                  <p className="font-semibold">{action.image}</p>
+                  <p className="text-sm">Target: {action.target_folder}</p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
-      {/* Commit Changes Modal */}
-      {showModal && (
+      {/* Commit Confirmation Modal */}
+      {showCommitModal && (
         <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50">
           <div className="bg-white p-6 rounded shadow-lg max-w-sm w-full">
-            <h2 className="text-xl font-semibold mb-4">Confirm Commit</h2>
-            <ul className="mb-4">
-              {pendingActions.map((action, index) => (
-                <li key={index}>
-                  {action.image} → {action.target_folder}
-                </li>
-              ))}
-            </ul>
+            <p className="mb-4">
+              Are you sure you want to commit all pending actions?
+            </p>
             <div className="flex justify-end space-x-2">
               <button 
                 className="px-4 py-2 bg-gray-300 hover:bg-gray-400 rounded"
-                onClick={() => setShowModal(false)}
+                onClick={() => setShowCommitModal(false)}
               >
                 Cancel
               </button>
               <button 
-                className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded"
-                onClick={commitChanges}
+                className="px-4 py-2 bg-green-500 hover:bg-green-600 text-white rounded"
+                onClick={() => {
+                  handleCommit();
+                  setShowCommitModal(false);
+                }}
               >
                 Confirm
               </button>
@@ -210,7 +263,6 @@ function Home() {
           </div>
         </div>
       )}
-
     </div>
   );
 }

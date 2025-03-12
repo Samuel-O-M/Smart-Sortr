@@ -2,22 +2,26 @@ import os
 import random
 import shutil
 import base64
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 app = Flask(__name__)
 CORS(app)
 
-
 # Hardcoded working folder path
 WORKING_DIR = r"C:\Users\Samu\Desktop\folder"
 INPUT_FOLDER = os.path.join(WORKING_DIR, "input")
-
-# Ensure the input folder exists
 os.makedirs(INPUT_FOLDER, exist_ok=True)
-# Ensure the trash folder exists as one of the categories
+# Protected trash folder (and any others that might exist)
 TRASH_FOLDER = os.path.join(WORKING_DIR, "trash")
 os.makedirs(TRASH_FOLDER, exist_ok=True)
+
+# Global in-memory stack for pending actions
+update_stack = []
+
+def get_pending_images():
+    # Returns list of image filenames that are already pending
+    return [action["image"] for action in update_stack]
 
 # ----------------- Endpoint: / -----------------
 @app.route('/')
@@ -27,11 +31,6 @@ def hello_world():
 # ----------------- Endpoint: /folder -----------------
 @app.route('/folder', methods=['POST'])
 def manage_folder():
-    """
-    Create or delete a folder in the working directory.
-    Expected JSON format: 
-      {"operation": "create" or "delete", "folder_name": "name"}
-    """
     data = request.json
     operation = data.get("operation")
     folder_name = data.get("folder_name")
@@ -39,7 +38,6 @@ def manage_folder():
     if not operation or not folder_name:
         return jsonify({"error": "Operation and folder name required"}), 400
     
-    # Do not allow deletion of the protected input folder.
     if operation == "delete" and folder_name.lower() == "input":
         return jsonify({"error": "Cannot delete the input folder"}), 400
 
@@ -56,16 +54,14 @@ def manage_folder():
             return jsonify({"error": "Invalid operation"}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-    
+
 # ----------------- Endpoint: /image -----------------
 @app.route('/image', methods=['GET'])
 def get_image():
-    """
-    Return the next image from the input folder along with its file name.
-    The image is returned as a base64 encoded string.
-    """
+    # Only list images that are not already pending (i.e. not in the update_stack)
+    pending = get_pending_images()
     images = [f for f in os.listdir(INPUT_FOLDER)
-              if os.path.isfile(os.path.join(INPUT_FOLDER, f))]
+              if os.path.isfile(os.path.join(INPUT_FOLDER, f)) and f not in pending]
     
     if not images:
         return jsonify({"error": "No images found in input folder"}), 404
@@ -73,7 +69,6 @@ def get_image():
     image_file = images[0]
     image_path = os.path.join(INPUT_FOLDER, image_file)
     
-    # Read and encode the image in base64
     with open(image_path, "rb") as img:
         image_data = base64.b64encode(img.read()).decode('utf-8')
     
@@ -86,11 +81,6 @@ def get_image():
 # ----------------- Endpoint: /classify -----------------
 @app.route('/classify', methods=['POST'])
 def classify_image():
-    """
-    Given an image file name (located in the input folder),
-    return a JSON object with random classification percentages for each category folder.
-    Expected JSON format: {"image_file": "example.jpg"}
-    """
     data = request.json
     image_file = data.get("image_file")
     
@@ -120,50 +110,121 @@ def classify_image():
 
 # ----------------- Endpoint: /update -----------------
 @app.route('/update', methods=['POST'])
-def update_changes():
+def add_to_stack():
     """
-    Process an array of actions to update changes.
-    Each action should contain:
-      "image": filename of the image (from input folder)
-      "target_folder": destination folder name (category or trash)
-    
-    Example payload:
-      [
-        {"image": "photo1.jpg", "target_folder": "Nature"},
-        {"image": "photo2.jpg", "target_folder": "trash"}
-      ]
-    
-    This endpoint moves each image from the input folder to the corresponding target folder.
+    Instead of immediately moving the image, add the action to the pending stack.
+    Expected payload: {"image": "photo.jpg", "target_folder": "CategoryName"}
     """
-    actions = request.json
-    if not isinstance(actions, list):
-        return jsonify({"error": "Expected a list of actions"}), 400
+    data = request.json
+    if not isinstance(data, dict):
+        return jsonify({"error": "Expected a JSON object with keys 'image' and 'target_folder'"}), 400
     
-    results = []
-    for action in actions:
-        image_file = action.get("image")
-        target_folder = action.get("target_folder")
-        if not image_file or not target_folder:
-            results.append({"image": image_file, "status": "failed", "reason": "Missing image or target_folder"})
-            continue
-        
+    image_file = data.get("image")
+    target_folder = data.get("target_folder")
+    if not image_file or not target_folder:
+        return jsonify({"error": "Missing image or target_folder"}), 400
+    
+    source_path = os.path.join(INPUT_FOLDER, image_file)
+    if not os.path.exists(source_path):
+        return jsonify({"error": "Image not found in input folder"}), 404
+    
+    # Prevent duplicate pending actions for the same image
+    if image_file in get_pending_images():
+        return jsonify({"error": "Image already pending action"}), 400
+    
+    update_stack.append({
+        "image": image_file,
+        "target_folder": target_folder,
+        "source_folder": INPUT_FOLDER
+    })
+    
+    return jsonify({
+        "message": f"Pending action added for image '{image_file}' to move to '{target_folder}'.",
+        "stack": update_stack
+    })
+
+# ----------------- Endpoint: /undo -----------------
+@app.route('/undo', methods=['POST'])
+def undo_last_action():
+    if not update_stack:
+        return jsonify({"error": "No actions to undo"}), 400
+    
+    last_action = update_stack.pop()
+    image_file = last_action["image"]
+    image_path = os.path.join(INPUT_FOLDER, image_file)
+    image_info = None
+    if os.path.exists(image_path):
+        with open(image_path, "rb") as img:
+            image_data = base64.b64encode(img.read()).decode('utf-8')
+        image_info = {
+            "image_file": image_file,
+            "image_data": image_data,
+            "mime_type": "image/jpeg"
+        }
+    
+    return jsonify({
+        "message": f"Removed pending action for image '{image_file}' targeting '{last_action['target_folder']}'.",
+        "stack": update_stack,
+        "restored_image": image_info
+    })
+
+# ----------------- Endpoint: /stack -----------------
+@app.route('/stack', methods=['GET'])
+def get_stack():
+    """
+    Returns the list of pending actions.
+    For each action, include the image preview (base64 encoded), the image name, and the target folder.
+    """
+    stack_with_previews = []
+    for action in update_stack:
+        image_file = action["image"]
+        image_path = os.path.join(INPUT_FOLDER, image_file)
+        preview_data = None
+        mime_type = "image/jpeg"
+        if os.path.exists(image_path):
+            with open(image_path, "rb") as img:
+                preview_data = base64.b64encode(img.read()).decode('utf-8')
+        stack_with_previews.append({
+            "image": image_file,
+            "target_folder": action["target_folder"],
+            "preview": preview_data,
+            "mime_type": mime_type
+        })
+    return jsonify({"stack": stack_with_previews})
+
+# ----------------- Endpoint: /commit -----------------
+@app.route('/commit', methods=['POST'])
+def commit_actions():
+    """
+    Process all pending actions in the stack.
+    Moves each image from the input folder to its target folder.
+    On success, the stack is cleared.
+    """
+    results = {"moved": [], "errors": []}
+    
+    while update_stack:
+        action = update_stack.pop(0)  # process actions in order
+        image_file = action["image"]
+        target_folder = action["target_folder"]
         source_path = os.path.join(INPUT_FOLDER, image_file)
         destination_folder = os.path.join(WORKING_DIR, target_folder)
         destination_path = os.path.join(destination_folder, image_file)
         
         if not os.path.exists(source_path):
-            results.append({"image": image_file, "status": "failed", "reason": "Image not found in input folder"})
+            results["errors"].append(f"Image '{image_file}' not found in input folder.")
             continue
         
         try:
             os.makedirs(destination_folder, exist_ok=True)
             shutil.move(source_path, destination_path)
-            results.append({"image": image_file, "status": "success", "moved_to": target_folder})
+            results["moved"].append(image_file)
         except Exception as e:
-            results.append({"image": image_file, "status": "failed", "reason": str(e)})
+            results["errors"].append(f"Error moving '{image_file}': {str(e)}")
     
-    return jsonify({"results": results})
+    return jsonify({
+        "message": "Commit completed.",
+        "results": results
+    })
 
-# ----------------- Run the Flask App -----------------
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
