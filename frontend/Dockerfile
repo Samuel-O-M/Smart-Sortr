@@ -19,11 +19,11 @@ RUN npm run build
 # Install a lightweight static file server to serve the production build
 RUN npm install -g serve
 
-# Expose the port that serve will use (3000 in this example)
-EXPOSE 3000
+# Expose the port that serve will use (3001 in this example)
+EXPOSE 3001
 
 # Start the container by serving the built app from the "dist" folder
-CMD ["serve", "-s", "dist", "-l", "3000"]
+CMD ["serve", "-s", "dist", "-l", "3001"]
 
 # docker build -t smart-sortr-frontend .
-# docker run -p 3000:3000 smart-sortr-frontend
+# docker run -p 3001:3001 smart-sortr-frontend

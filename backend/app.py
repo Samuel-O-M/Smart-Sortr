@@ -4,15 +4,21 @@ import shutil
 import base64
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from dotenv import load_dotenv
+import platform
+
 
 app = Flask(__name__)
 CORS(app)
 
-# Hardcoded working folder path
-WORKING_DIR = r"C:\Users\Samu\Desktop\folder"
+load_dotenv()
+
+
+WORKING_DIR = os.getenv("WORKING_DIR")
+
 INPUT_FOLDER = os.path.join(WORKING_DIR, "input")
 os.makedirs(INPUT_FOLDER, exist_ok=True)
-# Protected trash folder (and any others that might exist)
+
 TRASH_FOLDER = os.path.join(WORKING_DIR, "trash")
 os.makedirs(TRASH_FOLDER, exist_ok=True)
 
@@ -27,6 +33,11 @@ def get_pending_images():
 @app.route('/')
 def hello_world():
     return 'Hello, World!'
+
+# ----------------- Endpoint: /health -----------------
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({"status": "Backend is up and running"})
 
 # ----------------- Endpoint: /folder -----------------
 @app.route('/folder', methods=['POST'])
@@ -227,4 +238,5 @@ def commit_actions():
     })
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)

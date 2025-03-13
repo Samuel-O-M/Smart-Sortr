@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 
 function Home() {
-  const BACKEND_URL = 'http://127.0.0.1:5000';
+  const [backendUrl, setBackendUrl] = useState('');
   const [image, setImage] = useState(null); // { image_file, image_data, mime_type }
   const [predictions, setPredictions] = useState(null);
   const [folders, setFolders] = useState([]); // list of folder names from classification
@@ -9,10 +9,50 @@ function Home() {
   const [pendingStack, setPendingStack] = useState([]);
   const [showCommitModal, setShowCommitModal] = useState(false);
 
-  // Fetch the current image from /image endpoint
+  // Detect which port is working: 5000 first, then 5001.
+  const detectBackend = async () => {
+    let url = '';
+    try {
+      const response = await fetch('http://127.0.0.1:5000/health');
+      if (response.ok) {
+        url = 'http://127.0.0.1:5000';
+      }
+    } catch (err) {
+      // port 5000 might not be up
+    }
+    if (!url) {
+      try {
+        const response = await fetch('http://127.0.0.1:5001/health');
+        if (response.ok) {
+          url = 'http://127.0.0.1:5001';
+        }
+      } catch (err) {
+        // port 5001 might also be down
+      }
+    }
+    if (url) {
+      setBackendUrl(url);
+    } else {
+      setError('Backend is not available on ports 5000 or 5001.');
+    }
+  };
+
+  useEffect(() => {
+    detectBackend();
+  }, []);
+
+  // Once the backendUrl is determined, fetch initial data.
+  useEffect(() => {
+    if (backendUrl) {
+      fetchImage();
+      fetchStack();
+    }
+  }, [backendUrl]);
+
+  // Fetch the current image from /image endpoint.
   const fetchImage = async () => {
     try {
-      const response = await fetch(`${BACKEND_URL}/image`);
+      const response = await fetch(`${backendUrl}/image`);
       if (!response.ok) {
         const err = await response.json();
         setError(err.error || 'Error fetching image');
@@ -28,10 +68,10 @@ function Home() {
     }
   };
 
-  // Fetch pending actions stack
+  // Fetch pending actions stack.
   const fetchStack = async () => {
     try {
-      const response = await fetch(`${BACKEND_URL}/stack`);
+      const response = await fetch(`${backendUrl}/stack`);
       if (response.ok) {
         const data = await response.json();
         setPendingStack(data.stack);
@@ -41,10 +81,10 @@ function Home() {
     }
   };
 
-  // Classify the current image using /classify endpoint
+  // Classify the current image using /classify endpoint.
   const classifyImage = async (imageFile) => {
     try {
-      const response = await fetch(`${BACKEND_URL}/classify`, {
+      const response = await fetch(`${backendUrl}/classify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image_file: imageFile })
@@ -65,24 +105,18 @@ function Home() {
     }
   };
 
-  // Initial fetch on mount
-  useEffect(() => {
-    fetchImage();
-    fetchStack();
-  }, []);
-
-  // When a new image is loaded, classify it
+  // When a new image is loaded, classify it.
   useEffect(() => {
     if (image && image.image_file) {
       classifyImage(image.image_file);
     }
   }, [image]);
 
-  // Handle folder click: add the pending action
+  // Handle folder click: add the pending action.
   const handleFolderClick = async (folder) => {
     if (!image || !image.image_file) return;
     try {
-      const response = await fetch(`${BACKEND_URL}/update`, {
+      const response = await fetch(`${backendUrl}/update`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image: image.image_file, target_folder: folder })
@@ -93,7 +127,7 @@ function Home() {
       } else {
         const result = await response.json();
         console.log('Pending action added:', result);
-        // Refresh the pending actions and fetch the next image
+        // Refresh the pending actions and fetch the next image.
         fetchStack();
         fetchImage();
       }
@@ -102,10 +136,10 @@ function Home() {
     }
   };
 
-  // Undo the last pending action
+  // Undo the last pending action.
   const handleUndo = async () => {
     try {
-      const response = await fetch(`${BACKEND_URL}/undo`, {
+      const response = await fetch(`${backendUrl}/undo`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
       });
@@ -114,7 +148,7 @@ function Home() {
         alert('Error undoing action: ' + (data.error || 'Unknown error'));
       } else {
         console.log('Undo result:', data);
-        // Set the undone image as the current image if available
+        // Set the undone image as the current image if available.
         if (data.restored_image) {
           setImage(data.restored_image);
         } else {
@@ -126,11 +160,11 @@ function Home() {
       alert('Error undoing action');
     }
   };
-  
-  // Commit all pending actions
+
+  // Commit all pending actions.
   const handleCommit = async () => {
     try {
-      const response = await fetch(`${BACKEND_URL}/commit`, {
+      const response = await fetch(`${backendUrl}/commit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
       });
@@ -153,6 +187,9 @@ function Home() {
     <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 p-8">
       <header className="mb-8 text-center">
         <h1 className="text-4xl font-bold text-gray-800">Image Classification App</h1>
+        {backendUrl && (
+          <p className="text-sm text-gray-600">Connected to backend on {backendUrl}</p>
+        )}
       </header>
       <main className="w-full max-w-md bg-white shadow-md rounded-lg p-6">
         {error && <div className="text-red-500 mb-4">{error}</div>}
