@@ -18,3 +18,10 @@ logs/
 # Build and cache
 build/
 dist/
+
+# Environment
+.env
+
+# 
+model_artifacts/categories.json
+model_artifacts/model.pth
