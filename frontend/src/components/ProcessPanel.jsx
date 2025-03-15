@@ -9,21 +9,22 @@ export default function ProcessPanel({
   loadingPrediction
 }) {
   return (
-    <div className="bg-blue-100 w-64 p-4 flex flex-col items-center justify-start">
-      {/* Fixed-size area for process messages */}
+    <div className="h-full w-full bg-[#F0F0F0] flex flex-col items-center justify-around px-8">
+
       <div
-        className="bg-blue-300 text-white w-full mb-4 flex items-center justify-center"
-        style={{ height: '80px' }} // for example, a fixed height
+        className={`w-full flex items-center justify-center h-[40%] rounded-xl ${
+          processMessage ? 'bg-blue-500' : 'bg-blue-300'
+        } text-white`}
       >
         {processMessage ? (
-          <p className="text-center px-2">{processMessage}</p>
+          <p className="text-center">{processMessage}</p>
         ) : (
-          <p className="text-center px-2">No messages</p>
+          <p className="text-center">No messages</p>
         )}
       </div>
 
       <button
-        className="w-full bg-green-500 hover:bg-green-600 text-white py-2 rounded mb-2 disabled:opacity-50"
+        className="w-full bg-green-500 hover:bg-green-600 text-xl text-white font-semibold rounded-full disabled:opacity-50 h-[15%]"
         onClick={onCommit}
         disabled={loadingCommit || loadingInit || loadingPrediction}
       >
@@ -31,7 +32,7 @@ export default function ProcessPanel({
       </button>
 
       <button
-        className="w-full bg-red-500 hover:bg-red-600 text-white py-2 rounded disabled:opacity-50"
+        className="w-full bg-red-500 hover:bg-red-600 text-xl text-white font-semibold rounded-full disabled:opacity-50 h-[15%]"
         onClick={onUndo}
         disabled={loadingCommit || loadingInit || loadingPrediction}
       >

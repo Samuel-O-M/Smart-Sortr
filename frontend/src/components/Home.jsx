@@ -18,9 +18,6 @@ export default function Home() {
   const [loadingPrediction, setLoadingPrediction] = useState(false);
   const [loadingCommit, setLoadingCommit] = useState(false);
   
-  // For creating folders
-  const [newFolderName, setNewFolderName] = useState('');
-  
   // New state variable to persist predictions
   const [predictions, setPredictions] = useState({});
 
@@ -201,26 +198,21 @@ export default function Home() {
   };
 
   // ================ Handlers for Folders ================
-  const handleCreateFolder = async () => {
-    if (!newFolderName) return;
+  const handleCreateFolder = async (folderName) => {
+    if (!folderName) return;
     try {
       const res = await fetch(`${backendUrl}/folder`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ operation: 'create', folder_name: newFolderName })
+        body: JSON.stringify({ operation: 'create', folder_name: folderName })
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || 'Error creating folder');
-      }
-      console.log(`Folder "${newFolderName}" created.`);
-      setNewFolderName('');
+      console.log(`Folder "${folderName}" created.`);
       fetchFolders();
     } catch (err) {
       console.error(err);
     }
   };
-
+  
   const handleDeleteFolder = async (folderName) => {
     if (!window.confirm(`Are you sure you want to delete "${folderName}"?`)) return;
     try {
@@ -313,37 +305,43 @@ export default function Home() {
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden">
-      {/* Top header */}
-      <Header />
 
-      {/* Main content area (3 columns) */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* Left panel: process messages + commit/undo */}
-        <ProcessPanel
-          processMessage={processMessage}
-          onUndo={handleUndo}
-          onCommit={handleCommit}
-          loadingCommit={loadingCommit}
-          loadingInit={loadingInit}
-          loadingPrediction={loadingPrediction}
-        />
-
-        {/* Center: image preview */}
-        <ImagePreview image={image} />
-
-        {/* Right: action history */}
-        <ActionHistory actionHistory={actionHistory} />
+      <div className="h-[14%]">
+        <Header />
       </div>
+  
+      <div className="h-[64%] flex overflow-hidden">
 
-      {/* Bottom: folder block */}
-      <FoldersManager
-        folders={folders}
-        newFolderName={newFolderName}
-        setNewFolderName={setNewFolderName}
-        handleCreateFolder={handleCreateFolder}
-        handleFolderClick={handleFolderClick}
-        handleDeleteFolder={handleDeleteFolder}
-      />
+        <div className="w-[25%]">
+          <ProcessPanel
+            processMessage={processMessage}
+            onUndo={handleUndo}
+            onCommit={handleCommit}
+            loadingCommit={loadingCommit}
+            loadingInit={loadingInit}
+            loadingPrediction={loadingPrediction}
+          />
+        </div>
+
+        <div className="w-[50%]">
+          <ImagePreview image={image} />
+        </div>
+  
+        <div className="w-[25%]">
+          <ActionHistory actionHistory={actionHistory} />
+        </div>
+        
+      </div>
+  
+      <div className="h-[22%]">
+        <FoldersManager
+          folders={folders}
+          handleCreateFolder={handleCreateFolder}
+          handleFolderClick={handleFolderClick}
+          handleDeleteFolder={handleDeleteFolder}
+        />
+      </div>
     </div>
   );
+
 }

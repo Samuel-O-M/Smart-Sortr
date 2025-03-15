@@ -1,14 +1,12 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 export default function FoldersBlock({
   folders,
-  newFolderName,
-  setNewFolderName,
   handleCreateFolder,
   handleFolderClick,
   handleDeleteFolder,
 }) {
-  // Filter folders for the first row (folders with images)
+  // Filter folders for the top row (folders with images, excluding 'input')
   const foldersWithImages = folders.filter(
     (f) => !f.is_empty && f.name !== 'input'
   );
@@ -20,15 +18,23 @@ export default function FoldersBlock({
     return bScore - aScore;
   });
 
+  // Filter for empty or pending folders (including 'input' except we skip it in rendering)
+  const emptyOrPendingFolders = folders.filter(
+    (f) => f.is_empty || f.name === 'input'
+  );
+
   return (
-    <>
-      <div className="bg-gray-200 p-2">
-        {/* First row: Folders with Images */}
-        <div className="overflow-x-auto whitespace-nowrap mb-2 hide-scrollbar">
-          <p className="font-semibold">Folders with Images:</p>
-          <div className="flex space-x-2">
+    <div className="h-full flex flex-col justify-around bg-[#f0f0f0] p-4">
+      {/* Top Block */}
+      <div className="flex flex-row w-full" style={{ flex: 1 }}>
+        {/* Top Left Block */}
+        <div className="w-[20%]" />
+
+        {/* Top Right Block */}
+        <div className="w-[85%] overflow-x-auto whitespace-nowrap hide-scrollbar flex items-center">
           {sortedFoldersWithImages.length > 0 ? (
-              sortedFoldersWithImages.map((folder) => (
+            <div className="flex space-x-2">
+              {sortedFoldersWithImages.map((folder) => (
                 <div key={folder.name} className="inline-block">
                   <button
                     className="px-3 py-1 bg-white border rounded shadow"
@@ -36,9 +42,9 @@ export default function FoldersBlock({
                   >
                     {folder.name}{' '}
                     {folder.prediction && folder.prediction !== 'N/A'
-                      ? folder.prediction === "..." 
-                          ? `(${folder.prediction})`
-                          : `(${folder.prediction}%)`
+                      ? folder.prediction === '...'
+                        ? `(${folder.prediction})`
+                        : `(${folder.prediction}%)`
                       : '(N/A)'}
                   </button>
                   {folder.can_delete && (
@@ -50,67 +56,65 @@ export default function FoldersBlock({
                     </button>
                   )}
                 </div>
-              ))
-            ) : (
-              // Render a placeholder folder element when no folders are available
-              <div className="inline-block">
-                <div className="px-3 py-1 bg-gray-300 border rounded shadow opacity-50">
-                  Folder
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Second row: Empty or Pending Folders */}
-        <div className="overflow-x-auto whitespace-nowrap mt-2 hide-scrollbar">
-          <p className="font-semibold">Empty or Pending Folders:</p>
-          <div className="flex space-x-2 items-center">
-            {/* "+" button and input for creating a new folder */}
-            <div className="flex items-center space-x-1">
-              <button
-                className="px-3 py-1 bg-blue-500 text-white rounded shadow"
-                onClick={handleCreateFolder}
-              >
-                + Create Folder
-              </button>
-              <input
-                type="text"
-                className="border px-2 py-1 rounded"
-                placeholder="Folder name"
-                value={newFolderName}
-                onChange={(e) => setNewFolderName(e.target.value)}
-              />
+              ))}
             </div>
-            {folders
-              .filter((f) => f.is_empty || f.name === 'input')
-              .map((folder) => {
-                if (folder.name.toLowerCase() === 'input') {
-                  // Skip special folders
-                  return null;
-                }
-                return (
-                  <div key={folder.name} className="inline-block">
-                    <button
-                      className="px-3 py-1 bg-white border rounded shadow"
-                      onClick={() => handleFolderClick(folder.name)}
-                    >
-                      {folder.name} (N/A)
-                    </button>
-                    {folder.can_delete && (
-                      <button
-                        className="ml-1 px-2 text-red-600 border border-red-600 rounded"
-                        onClick={() => handleDeleteFolder(folder.name)}
-                      >
-                        X
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-          </div>
+          ) : (
+            // placeholder folder element when no folders are available
+            <div className="inline-block">
+              <div className="px-3 py-1 bg-gray-300 border rounded shadow opacity-50">
+                Folder
+              </div>
+            </div>
+          )}
         </div>
       </div>
+
+      {/* Bottom Block */}
+      <div className="flex flex-row w-full" style={{ flex: 1 }}>
+        {/* Bottom Left Block */}
+        <div className="w-[20%] flex items-center justify-center">
+        <button
+          className="px-3 py-1 bg-blue-500 text-white rounded shadow"
+          onClick={() => {
+            const folderName = window.prompt('Enter folder name:');
+            if (folderName) {
+              handleCreateFolder(folderName);
+            }
+          }}
+        >
+          + Create Folder
+        </button>
+        </div>
+
+        {/* Bottom Right Block */}
+        <div className="w-[85%] overflow-x-auto whitespace-nowrap hide-scrollbar flex items-center">
+          {emptyOrPendingFolders.map((folder) => {
+            // Skip special folders named "input" if needed
+            if (folder.name.toLowerCase() === 'input') {
+              return null;
+            }
+            return (
+              <div key={folder.name} className="inline-block mr-2">
+                <button
+                  className="px-3 py-1 bg-white border rounded shadow"
+                  onClick={() => handleFolderClick(folder.name)}
+                >
+                  {folder.name} (N/A)
+                </button>
+                {folder.can_delete && (
+                  <button
+                    className="ml-1 px-2 text-red-600 border border-red-600 rounded"
+                    onClick={() => handleDeleteFolder(folder.name)}
+                  >
+                    X
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
       <style>{`
         .hide-scrollbar::-webkit-scrollbar {
           display: none;
@@ -120,6 +124,6 @@ export default function FoldersBlock({
           scrollbar-width: none;
         }
       `}</style>
-    </>
+    </div>
   );
 }
