@@ -20,7 +20,7 @@ build/
 dist/
 
 # Environment
-.env
+# .env
 
 # Data
 model_artifacts/*
