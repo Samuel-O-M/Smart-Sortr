@@ -2,19 +2,27 @@ import os
 import random
 import shutil
 import base64
+import json
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from dotenv import load_dotenv
 import platform
+import threading
+from functools import wraps
 
+# custom functions
+from model_manager import create_working_model, update_model, predict, TRAINING_DATA_HASH_PATH
 
 app = Flask(__name__)
 CORS(app)
 
+# load folder paths
 load_dotenv()
 
 
+
 WORKING_DIR = os.getenv("WORKING_DIR")
+SAMPLE_DIR = os.getenv("SAMPLE_DIR")
 
 INPUT_FOLDER = os.path.join(WORKING_DIR, "input")
 os.makedirs(INPUT_FOLDER, exist_ok=True)
@@ -22,26 +30,245 @@ os.makedirs(INPUT_FOLDER, exist_ok=True)
 TRASH_FOLDER = os.path.join(WORKING_DIR, "trash")
 os.makedirs(TRASH_FOLDER, exist_ok=True)
 
-# Global in-memory stack for pending actions
-update_stack = []
 
-def get_pending_images():
-    # Returns list of image filenames that are already pending
-    return [action["image"] for action in update_stack]
+# =================== Global Process Lock ===================
 
-# ----------------- Endpoint: / -----------------
+# process_lock = threading.Lock()
+
+# def single_process(func):
+#     @wraps(func)
+#     def wrapper(*args, **kwargs):
+#         if process_lock.locked():
+#             return jsonify({"message": "Another process is currently running. Please wait."}), 429
+#         with process_lock:
+#             return func(*args, **kwargs)
+#     return wrapper
+
+
+# =================== Global Variables ===================
+
+# this could be optimized --- from collections import OrderedDict
+
+update_stack = [] # stack of update actions (storing image names)
+
+update_stack_dict = {} # dictionary with keys
+    #     "image_name"
+    # and value
+    #     "target_folder": target_folder
+    # predictions are not stored, they are recalculated
+
+folders = {} # dictionary with keys
+    #     "folder_name"
+    # and values
+    #     "is_empty": True/False
+    #     "has_pending": True/False
+    # thus => can_delete = is_empty and has_pending == 0
+
+
+# =================== Helper Functions ===================
+
+def get_image_data(image_path):
+    with open(image_path, "rb") as img:
+        image_data = base64.b64encode(img.read()).decode('utf-8')
+    return image_data
+
+def load_sample_data():
+    """
+    Clears the contents of the data folder (WORKING_DIR/data) and then
+    copies all files and subdirectories from the sample data folder (SAMPLE_DIR)
+    into it, making an exact copy.
+    """
+        
+    if not os.path.exists(SAMPLE_DIR):
+        print("No sample data folder found at:", SAMPLE_DIR)
+        return
+
+    if os.path.exists(WORKING_DIR):
+        try:
+            shutil.rmtree(WORKING_DIR)
+        except Exception as e:
+            print(f"Error clearing {WORKING_DIR}: {e}")
+            return
+
+    os.makedirs(WORKING_DIR, exist_ok=True)
+    
+    # Copy all contents from SAMPLE_DIR to data_dir.
+    for item in os.listdir(SAMPLE_DIR):
+        source_item = os.path.join(SAMPLE_DIR, item)
+        dest_item = os.path.join(WORKING_DIR, item)
+        try:
+            if os.path.isdir(source_item):
+                shutil.copytree(source_item, dest_item)
+            else:
+                shutil.copy2(source_item, dest_item)
+        except Exception as e:
+            print(f"Error copying {source_item} to {dest_item}: {e}")
+
+# =================== Initial Endpoints ===================
+
 @app.route('/')
 def hello_world():
     return 'Hello, World!'
 
-# ----------------- Endpoint: /health -----------------
 @app.route('/health', methods=['GET'])
 def health_check():
     return jsonify({"status": "Backend is up and running"})
 
-# ----------------- Endpoint: /folder -----------------
+@app.route('/initialize', methods=['POST'])
+# @single_process
+def api_initialize_model_endpoint():
+
+    global folders
+
+    try:
+        print("Initializing model (triggered by /initialize)...")
+
+        load_sample_data()
+
+        create_working_model(WORKING_DIR)
+
+        folders = {}
+
+        # process folders in the working directory
+        for f in os.listdir(WORKING_DIR):
+            folder_path = os.path.join(WORKING_DIR, f)
+            if os.path.isdir(folder_path) and f.lower() not in ['input', 'trash']:
+                is_empty = (len(os.listdir(folder_path)) == 0)
+                folders[f] = {
+                    "is_empty": is_empty,
+                    "has_pending": 0
+                }
+
+        # also add "input" and "trash" folders
+        folders["input"] = {
+            "is_empty": (len(os.listdir(INPUT_FOLDER)) == 0),
+            "has_pending": 0
+        }
+        folders["trash"] = {
+            "is_empty": (len(os.listdir(TRASH_FOLDER)) == 0),
+            "has_pending": 0
+        }
+
+        return jsonify({"message": "Model initialization complete.", "folders": folders})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# =================== API Endpoints ===================
+
+@app.route('/image_data', methods=['POST'])
+# @single_process
+def api_get_image_data():
+    """
+    Returns the image data for a given image name.
+    """
+    data = request.json
+    image_name = data.get("image_name")
+    
+    if not image_name:
+        return jsonify({"error": "No image file specified"}), 400
+    
+    image_path = os.path.join(INPUT_FOLDER, image_name)
+    if not os.path.exists(image_path):
+        return jsonify({"error": "Image not found in input folder"}), 404
+    
+    image_data = get_image_data(image_path)
+    return jsonify({
+        "image_name": image_name,
+        "image_data": image_data,
+        "mime_type": "image/jpeg"
+    })
+
+@app.route('/stack', methods=['GET'])
+# @single_process
+def api_get_stack():
+    """
+    Returns the current pending actions stored in update_stack.
+    """
+    return jsonify({"stack": update_stack})
+
+@app.route('/update', methods=['POST'])
+# @single_process
+def api_add_to_stack():
+    """
+    Adds a pending action to update_stack.
+    Expected payload: { "image_name": <image_name>, "target_folder": <folder_name> }
+    The entry added will be { "image_name": <image_name>, "target_folder": <folder_name> }.
+    After adding, refresh the folders (to update has_pending).
+    """
+    global update_stack
+    global update_stack_dict
+    global folders
+
+    data = request.json
+    if not isinstance(data, dict):
+        return jsonify({"error": "Expected a JSON object with keys 'image' and 'target_folder'"}), 400
+    
+    image_name = data.get("image_name")
+    target_folder = data.get("target_folder")
+
+    if not target_folder:
+        return jsonify({"error": "Target folder not specified"}), 400
+    
+    source_path = os.path.join(INPUT_FOLDER, image_name)
+    if not os.path.exists(source_path):
+        return jsonify({"error": "Image not found in input folder"}), 404
+    
+    # Prevent duplicate pending actions for the same image.
+    if image_name in update_stack:
+        return jsonify({"error": "Image already pending action"}), 400
+
+    # Append new pending action (predictions are recalculated on demand).
+    update_stack.append(image_name)
+    update_stack_dict[image_name] = target_folder
+    folders[target_folder]["has_pending"] += 1
+    return jsonify({
+        "message": f"Pending action added for image '{image_name}' to move to '{target_folder}'.",
+        "stack": update_stack
+    })
+
+@app.route('/undo', methods=['POST'])
+# @single_process
+def api_pop_from_stack():
+    """
+    Removes the last pending action from update_stack.
+    Returns the restored image (if available) and the updated stack.
+    Also refreshes folders.
+    """
+    global update_stack
+    global update_stack_dict
+    global folders
+
+    if not update_stack:
+        return jsonify({"error": "No actions to undo"}), 400
+    
+    image_name = update_stack.pop()
+    target_folder = update_stack_dict[image_name]
+    del update_stack_dict[image_name]
+
+    folders[target_folder]["has_pending"] -= 1
+    
+    return jsonify({
+        "message": f"Removed pending action for image '{image_name}' targeting '{target_folder}'.",
+        "stack": update_stack}
+    )
+
+@app.route('/folders', methods=['GET'])
+# @single_process
+def api_get_folders():
+    """
+    Returns the list of folders in the working directory.    
+    """
+    global folders
+    return jsonify({"folders": folders})
+
 @app.route('/folder', methods=['POST'])
-def manage_folder():
+# @single_process
+def api_manage_folder():
+    """
+    Create or delete a folder.
+    Expected payload: { "operation": "create"/"delete", "folder_name": <name> }
+    After performing the operation, refresh the folders global variable.
+    """
     data = request.json
     operation = data.get("operation")
     folder_name = data.get("folder_name")
@@ -49,193 +276,175 @@ def manage_folder():
     if not operation or not folder_name:
         return jsonify({"error": "Operation and folder name required"}), 400
     
-    if operation == "delete" and folder_name.lower() == "input":
-        return jsonify({"error": "Cannot delete the input folder"}), 400
+    # prevent deletion of the 'input' or 'trash' folders.
+    if operation == "delete" and (folder_name.lower() == "input" or folder_name.lower() == "trash"):
+        return jsonify({"error": "Cannot delete the input or trash folder"}), 400
 
     folder_path = os.path.join(WORKING_DIR, folder_name)
     
     try:
+        global folders
+        message = ""
         if operation == "create":
+            if folder_name in folders:
+                return jsonify({"error": f"Folder '{folder_name}' already exists."}), 400
             os.makedirs(folder_path, exist_ok=True)
-            return jsonify({"message": f"Folder '{folder_name}' created."})
+            folders[folder_name] = {"is_empty": True, "has_pending": 0}
+            message = f"Folder '{folder_name}' created."
         elif operation == "delete":
+            if folder_name not in folders:
+                return jsonify({"error": f"Folder '{folder_name}' does not exist."}), 400
+            if not folders[folder_name]["is_empty"]:
+                return jsonify({"error": f"Folder '{folder_name}' is not empty and thus cannot be deleted."}), 400
             shutil.rmtree(folder_path)
-            return jsonify({"message": f"Folder '{folder_name}' deleted."})
+            del folders[folder_name]
+            message = f"Folder '{folder_name}' deleted."
         else:
             return jsonify({"error": "Invalid operation"}), 400
+        
+        return jsonify({"message": message})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# ----------------- Endpoint: /image -----------------
-@app.route('/image', methods=['GET'])
-def get_image():
-    # Only list images that are not already pending (i.e. not in the update_stack)
-    pending = get_pending_images()
-    images = [f for f in os.listdir(INPUT_FOLDER)
-              if os.path.isfile(os.path.join(INPUT_FOLDER, f)) and f not in pending]
-    
-    if not images:
+@app.route('/current_image', methods=['GET'])
+# @single_process
+def api_get_current_image():
+    """
+    Returns the first image from the input folder that is not pending.
+    """
+    global update_stack
+    global folders
+
+    pending_set = set(update_stack)  # for O(1) tests
+
+    found = None
+    with os.scandir(INPUT_FOLDER) as entries:
+        for entry in entries:
+            if entry.is_file() and entry.name not in pending_set:
+                found = entry.name
+                break
+
+    if not found:
+        folders["input"]["is_empty"] = True
         return jsonify({"error": "No images found in input folder"}), 404
-    
-    image_file = images[0]
-    image_path = os.path.join(INPUT_FOLDER, image_file)
-    
-    with open(image_path, "rb") as img:
-        image_data = base64.b64encode(img.read()).decode('utf-8')
-    
+
+    image_name = found
+    image_path = os.path.join(INPUT_FOLDER, image_name)
+    image_data = get_image_data(image_path)
+
     return jsonify({
-        "image_file": image_file,
+        "image_name": image_name,
         "image_data": image_data,
         "mime_type": "image/jpeg"
     })
 
-# ----------------- Endpoint: /classify -----------------
 @app.route('/classify', methods=['POST'])
-def classify_image():
+# @single_process
+def api_classify_image():
+    """
+    Returns classification predictions for a given image.
+    Expected payload: { "image_name": <filename> }
+    Returns a dictionary mapping each category (excluding 'input' and 'trash') 
+    to its score (0–100) if available or "N/A" if not.
+    """
+    global folders
+
     data = request.json
-    image_file = data.get("image_file")
+    image_name = data.get("image_name")
     
-    if not image_file:
+    if not image_name:
         return jsonify({"error": "No image file specified"}), 400
 
-    image_path = os.path.join(INPUT_FOLDER, image_file)
+    image_path = os.path.join(INPUT_FOLDER, image_name)
     if not os.path.exists(image_path):
         return jsonify({"error": "Image not found in input folder"}), 404
     
-    # List all category folders (all subfolders in WORKING_DIR except 'input')
-    folders = [d for d in os.listdir(WORKING_DIR)
-               if os.path.isdir(os.path.join(WORKING_DIR, d)) and d.lower() != "input"]
+    image_data = get_image_data(image_path)
     
-    if not folders:
-        return jsonify({"error": "No category folders found"}), 404
+    try:
+        predictions = predict(image_data)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
     
-    # Generate random scores for each folder
-    scores = {folder: random.randint(1, 100) for folder in folders}
-    total_score = sum(scores.values())
-    predictions = {folder: round(score / total_score, 2) for folder, score in scores.items()}
-    
-    return jsonify({
-        "image_file": image_file,
-        "predictions": predictions
-    })
-
-# ----------------- Endpoint: /update -----------------
-@app.route('/update', methods=['POST'])
-def add_to_stack():
-    """
-    Instead of immediately moving the image, add the action to the pending stack.
-    Expected payload: {"image": "photo.jpg", "target_folder": "CategoryName"}
-    """
-    data = request.json
-    if not isinstance(data, dict):
-        return jsonify({"error": "Expected a JSON object with keys 'image' and 'target_folder'"}), 400
-    
-    image_file = data.get("image")
-    target_folder = data.get("target_folder")
-    if not image_file or not target_folder:
-        return jsonify({"error": "Missing image or target_folder"}), 400
-    
-    source_path = os.path.join(INPUT_FOLDER, image_file)
-    if not os.path.exists(source_path):
-        return jsonify({"error": "Image not found in input folder"}), 404
-    
-    # Prevent duplicate pending actions for the same image
-    if image_file in get_pending_images():
-        return jsonify({"error": "Image already pending action"}), 400
-    
-    update_stack.append({
-        "image": image_file,
-        "target_folder": target_folder,
-        "source_folder": INPUT_FOLDER
-    })
+    # build full dictionary with the score or "N/A"
+    full_predictions = {}
+    for category in folders:
+        if category.lower() == "input":
+            continue
+        if category in predictions:
+            full_predictions[category] = predictions[category]
+        else:
+            full_predictions[category] = "N/A"
     
     return jsonify({
-        "message": f"Pending action added for image '{image_file}' to move to '{target_folder}'.",
-        "stack": update_stack
+        "predictions": full_predictions
     })
 
-# ----------------- Endpoint: /undo -----------------
-@app.route('/undo', methods=['POST'])
-def undo_last_action():
-    if not update_stack:
-        return jsonify({"error": "No actions to undo"}), 400
-    
-    last_action = update_stack.pop()
-    image_file = last_action["image"]
-    image_path = os.path.join(INPUT_FOLDER, image_file)
-    image_info = None
-    if os.path.exists(image_path):
-        with open(image_path, "rb") as img:
-            image_data = base64.b64encode(img.read()).decode('utf-8')
-        image_info = {
-            "image_file": image_file,
-            "image_data": image_data,
-            "mime_type": "image/jpeg"
-        }
-    
-    return jsonify({
-        "message": f"Removed pending action for image '{image_file}' targeting '{last_action['target_folder']}'.",
-        "stack": update_stack,
-        "restored_image": image_info
-    })
-
-# ----------------- Endpoint: /stack -----------------
-@app.route('/stack', methods=['GET'])
-def get_stack():
-    """
-    Returns the list of pending actions.
-    For each action, include the image preview (base64 encoded), the image name, and the target folder.
-    """
-    stack_with_previews = []
-    for action in update_stack:
-        image_file = action["image"]
-        image_path = os.path.join(INPUT_FOLDER, image_file)
-        preview_data = None
-        mime_type = "image/jpeg"
-        if os.path.exists(image_path):
-            with open(image_path, "rb") as img:
-                preview_data = base64.b64encode(img.read()).decode('utf-8')
-        stack_with_previews.append({
-            "image": image_file,
-            "target_folder": action["target_folder"],
-            "preview": preview_data,
-            "mime_type": mime_type
-        })
-    return jsonify({"stack": stack_with_previews})
-
-# ----------------- Endpoint: /commit -----------------
 @app.route('/commit', methods=['POST'])
-def commit_actions():
+# # @single_process
+def api_commit_actions():
     """
-    Process all pending actions in the stack.
-    Moves each image from the input folder to its target folder.
-    On success, the stack is cleared.
+    Processes all pending actions:
+      - Moves each image from the input folder to its target folder.
+      - Updates the model using the newly committed images.
+      - Clears update_stack.
+      - Refreshes folders.
     """
+    global update_stack
+    global update_stack_dict
+    global folders
+
     results = {"moved": [], "errors": []}
+    new_committed = []
     
     while update_stack:
-        action = update_stack.pop(0)  # process actions in order
-        image_file = action["image"]
-        target_folder = action["target_folder"]
-        source_path = os.path.join(INPUT_FOLDER, image_file)
-        destination_folder = os.path.join(WORKING_DIR, target_folder)
-        destination_path = os.path.join(destination_folder, image_file)
+
+        image_name = update_stack.pop()
+        image_data = get_image_data(os.path.join(INPUT_FOLDER, image_name))
+        image_path = os.path.join(INPUT_FOLDER, image_name)
+        target_folder = update_stack_dict[image_name]
+        target_path = os.path.join(WORKING_DIR, target_folder, image_name)
+
+        del update_stack_dict[image_name]
+        folders[target_folder]["has_pending"] -= 1
+
         
-        if not os.path.exists(source_path):
-            results["errors"].append(f"Image '{image_file}' not found in input folder.")
+        if not os.path.exists(image_path):
+            results["errors"].append(f"Image '{image_name}' not found in input folder.")
             continue
         
         try:
-            os.makedirs(destination_folder, exist_ok=True)
-            shutil.move(source_path, destination_path)
-            results["moved"].append(image_file)
+            os.makedirs(os.path.join(WORKING_DIR, target_folder), exist_ok=True)
+            shutil.move(image_path, target_path)
+            results["moved"].append(image_name)
+            new_committed.append(target_path)
+
+            folders[target_folder]["is_empty"] = False
+
         except Exception as e:
-            results["errors"].append(f"Error moving '{image_file}': {str(e)}")
+            results["errors"].append(f"Error moving '{image_name}' to '{target_folder}': {str(e)}")
     
-    return jsonify({
-        "message": "Commit completed.",
-        "results": results
-    })
+    # Update with the newly committed images
+    if new_committed:
+        new_images = []
+        for target_path in new_committed:
+            image_data = get_image_data(target_path)
+            new_images.append({
+                "image_path": target_path,
+                "image_data": image_data,
+                "mime_type": "image/jpeg"
+            })
+        try:
+            non_empty_folders = {folder for folder in folders if not folders[folder]["is_empty"] and folder.lower() != "input"}
+            update_model(new_images, list(non_empty_folders))
+        except Exception as e:
+            results["errors"].append(f"Error updating model: {str(e)}")
+    
+    if results["errors"]:
+        return jsonify({"error": "Errors occurred during commit.", "results": results}), 400
+    else:
+        return jsonify({"message": "Commit completed successfully.", "results": results}), 200
+
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))

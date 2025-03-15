@@ -2,6 +2,9 @@ import os
 import json
 import io
 import argparse
+import hashlib
+import math
+import base64
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -11,29 +14,56 @@ from torchvision.models import ResNet50_Weights
 from PIL import Image
 from dotenv import load_dotenv
 
-# Create artifacts directory and update model and categories paths accordingly.
+
 ARTIFACTS_DIR = "./model_artifacts"
 if not os.path.exists(ARTIFACTS_DIR):
     os.makedirs(ARTIFACTS_DIR)
 MODEL_PATH = os.path.join(ARTIFACTS_DIR, "model.pth")
-CATEGORIES_PATH = os.path.join(ARTIFACTS_DIR, "categories.json")
+TRAINING_DATA_HASH_PATH = os.path.join(ARTIFACTS_DIR, "hashed_training_data.json")
 
+load_dotenv()
 WORKING_DIR = os.getenv("WORKING_DIR")
+SAMPLE_DIR = os.getenv("SAMPLE_DIR")
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 NUM_EPOCHS = 5
 BATCH_SIZE = 16
-LEARNING_RATE = 0.001
+LEARNING_RATE = 0.005
 
-# Default test transforms (not affected by mode)
+
 test_transforms = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 ])
 
-# Global variable for training transforms.
-train_transforms = None
+# hardcode the training mode
+mode = "mild"
+
+if mode == "none":
+    train_transforms = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ])
+elif mode == "mild":
+    train_transforms = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(degrees=10),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ])
+elif mode == "heavy":
+    train_transforms = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(degrees=45),
+        transforms.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5),
+        transforms.RandomResizedCrop(224, scale=(0.8, 1.0)),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ])
 
 def load_image(source):
     """
@@ -49,17 +79,40 @@ def load_image(source):
         image = image.convert("RGBA")
     return image.convert("RGB")
 
+def process_image_input(data):
+    """
+    Processes the input image data, which can be:
+      - a valid file path,
+      - a base64-encoded string, or
+      - raw bytes.
+    Returns a PIL Image.
+    """
+    if isinstance(data, str):
+        if os.path.exists(data):
+            return load_image(data)
+        else:
+            try:
+                image_bytes = base64.b64decode(data)
+            except Exception as e:
+                raise ValueError("Invalid image data: not a valid file path or base64 string") from e
+            return load_image(image_bytes)
+    elif isinstance(data, bytes):
+        return load_image(data)
+    else:
+        raise ValueError("Unsupported type for image data")
+
+
 def get_category_image_paths(working_dir):
     """
-    Scan the working directory for category folders (ignoring 'input' and 'trash')
+    Scan the working directory for category folders (excluding only 'input')
     and return a sorted list of category names and a list of (image_path, category) tuples.
     """
     allowed_extensions = {".jpg", ".jpeg", ".png"}
     categories = []
-    data = []  # List of tuples: (image_path, category)
+    data = []  # list of tuples: (image_path, category)
     for item in os.listdir(working_dir):
         item_path = os.path.join(working_dir, item)
-        if os.path.isdir(item_path) and item.lower() not in ['input', 'trash']:
+        if os.path.isdir(item_path) and item.lower() != 'input':
             categories.append(item)
             for file in os.listdir(item_path):
                 ext = os.path.splitext(file)[1].lower()
@@ -67,6 +120,7 @@ def get_category_image_paths(working_dir):
                     file_path = os.path.join(item_path, file)
                     data.append((file_path, item))
     return sorted(list(set(categories))), data
+
 
 class CategoryDataset(Dataset):
     """
@@ -87,11 +141,11 @@ class CategoryDataset(Dataset):
             image = self.transform(image)
         label = self.category_to_idx[category]
         return image, label
-
-class UpdateDataset(Dataset):
+    
+class UpdateDataset(torch.utils.data.Dataset):
     """
     Dataset for new images provided via user feedback.
-    Assumes that the image_file path encodes the category (its parent folder name).
+    Assumes that the image path (the 'image_path' key) encodes the category via its parent folder name.
     """
     def __init__(self, image_infos, category_to_idx, transform):
         self.image_infos = image_infos
@@ -103,17 +157,18 @@ class UpdateDataset(Dataset):
 
     def __getitem__(self, idx):
         info = self.image_infos[idx]
-        image_file = info["image_file"]
-        category = os.path.basename(os.path.dirname(image_file))
+        image_path = info["image_path"]
+        category = os.path.basename(os.path.dirname(image_path))
         if category not in self.category_to_idx:
             raise ValueError(f"Category '{category}' not found in known categories.")
         image_data = info["image_data"]
-        image = load_image(image_data)
+        # process image_data (expected to be base64 string) using helper
+        image = process_image_input(image_data)
         if self.transform:
             image = self.transform(image)
         label = self.category_to_idx[category]
         return image, label
-
+    
 def train_model(model, dataloader, criterion, optimizer, num_epochs):
     """
     Basic training loop.
@@ -134,104 +189,184 @@ def train_model(model, dataloader, criterion, optimizer, num_epochs):
         print(f"Epoch {epoch+1}/{num_epochs}, Loss: {epoch_loss:.4f}")
     return model
 
+
+def compute_training_data_hash(working_dir, categories=None):
+    """
+    Scans the working directory for category folders (excluding 'input')
+    and computes a hash for each image.
+    Returns a dictionary with keys 'categories' and 'data' (mapping category to list of image info).
+    """
+    allowed_extensions = {".jpg", ".jpeg", ".png"}
+    training_data = {}
+    computed_categories = []
+    for item in os.listdir(working_dir):
+        item_path = os.path.join(working_dir, item)
+        if os.path.isdir(item_path) and item.lower() != 'input':
+            computed_categories.append(item)
+            images_info = []
+            for file in os.listdir(item_path):
+                ext = os.path.splitext(file)[1].lower()
+                if ext in allowed_extensions:
+                    file_path = os.path.join(item_path, file)
+                    with open(file_path, "rb") as f:
+                        file_data = f.read()
+                    file_hash = hashlib.sha256(file_data).hexdigest()
+                    images_info.append({"filename": file, "hash": file_hash})
+            images_info = sorted(images_info, key=lambda x: x["filename"])
+            training_data[item] = images_info
+    computed_categories = sorted(list(set(computed_categories)))
+    if not categories: # in case this is called from create_working_model
+        categories = computed_categories
+    return {"categories": categories, "data": training_data}
+
+
 def create_working_model(working_dir):
     """
     Create a working model:
       - Scan the working directory for category folders (ignoring 'input' and 'trash').
-      - If valid images exist, fine-tune a pre-trained ResNet50 on these images.
-      - Otherwise, return a basic fine-tuned model.
-      - Save the model (MODEL_PATH) and the list of categories (CATEGORIES_PATH).
+      - Compute a hash for each image and compare with the stored hashed_training_data.json.
+      - If the current state matches, load the saved model.
+      - Otherwise, fine-tune a pre-trained ResNet50 on these images and update the hash file.
     """
-    categories, data = get_category_image_paths(working_dir)
-    if not categories or not data:
+    # try to load existing model
+    current_hash = compute_training_data_hash(working_dir)
+    if os.path.exists(TRAINING_DATA_HASH_PATH):
+        with open(TRAINING_DATA_HASH_PATH, "r") as f:
+            stored_hash = json.load(f)
+        if stored_hash == current_hash and os.path.exists(MODEL_PATH):
+            print("Working directory unchanged, loading existing model.")
+            weights = ResNet50_Weights.DEFAULT
+            model = models.resnet50(weights=weights)
+            for param in model.parameters():
+                param.requires_grad = False
+            num_classes = len(stored_hash.get("categories", [])) if stored_hash.get("categories", []) else 2
+            in_features = model.fc.in_features
+            model.fc = nn.Linear(in_features, num_classes)
+            model = model.to(DEVICE)
+            model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
+            return model
+
+    # otherwise, train a new model
+    categories, data_paths = get_category_image_paths(working_dir)
+    if not categories or not data_paths:
         print("No valid categories with images found in working directory.")
         print("Creating basic fine-tuned model using ImageNet pre-trained weights.")
-
     if categories:
         categories = sorted(categories)
         category_to_idx = {cat: idx for idx, cat in enumerate(categories)}
     else:
         category_to_idx = {}
 
-    # Load pre-trained ResNet50 using the new 'weights' parameter and freeze its parameters
+    dataset = CategoryDataset(data_paths, category_to_idx, train_transforms)
+    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
     weights = ResNet50_Weights.DEFAULT
     model = models.resnet50(weights=weights)
     for param in model.parameters():
         param.requires_grad = False
-
     num_classes = len(category_to_idx) if category_to_idx else 2
     in_features = model.fc.in_features
     model.fc = nn.Linear(in_features, num_classes)
     model = model.to(DEVICE)
-
-    if data:
-        dataset = CategoryDataset(data, category_to_idx, train_transforms)
-        dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
+    if data_paths:
+        print("Fine-tuning model on provided categories...")
         criterion = nn.CrossEntropyLoss()
         optimizer = optim.Adam(model.fc.parameters(), lr=LEARNING_RATE)
-        print("Fine-tuning model on provided categories...")
         model = train_model(model, dataloader, criterion, optimizer, NUM_EPOCHS)
     else:
         print("No training data available, using basic fine-tuned model.")
 
     torch.save(model.state_dict(), MODEL_PATH)
-    with open(CATEGORIES_PATH, "w") as f:
-        json.dump({"categories": categories}, f)
-    print(f"Model and category mapping saved in {ARTIFACTS_DIR}.")
+    with open(TRAINING_DATA_HASH_PATH, "w") as f:
+        json.dump(current_hash, f)
+    print(f"Model and training data hash saved in {ARTIFACTS_DIR}.")
     return model
 
-def update_model(image_infos):
+def update_model(image_infos, new_categories):
     """
     Update the stored model with new user data.
+    
     image_infos: a list of dictionaries with keys:
-        - "image_file": path string (assumed to contain the category folder)
-        - "image_data": raw bytes of the image
+        - "image_path": the image path (including category folder name)
+        - "image_data": base64-encoded image data
         - "mime_type": e.g. "image/jpeg"
+        
+    new_categories: a list of nonempty folder names.
+      (old training categories are a subset of new categories)
     """
-    if not os.path.exists(CATEGORIES_PATH):
-        raise FileNotFoundError("Categories mapping file not found. Please run create_working_model first.")
-    with open(CATEGORIES_PATH, "r") as f:
+    import torch.nn as nn
+    from torchvision.models import ResNet50_Weights
+    from torch.utils.data import DataLoader
+
+    if not os.path.exists(TRAINING_DATA_HASH_PATH):
+        raise FileNotFoundError("Hashed training data file not found. Please run create_working_model first.")
+    with open(TRAINING_DATA_HASH_PATH, "r") as f:
         data = json.load(f)
-    categories = data.get("categories", [])
-    if not categories:
-        raise ValueError("No categories found in mapping.")
-    category_to_idx = {cat: idx for idx, cat in enumerate(categories)}
-
-    dataset = UpdateDataset(image_infos, category_to_idx, train_transforms)
-    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
-
+    old_categories = data.get("categories", [])
+    if not old_categories:
+        raise ValueError("No categories found in training data hash.")
+    
+    # build updated category list: keep old categories first, then append any new ones (sorted).
+    new_categories = sorted(new_categories)
+    additional_categories = [cat for cat in new_categories if cat not in old_categories]
+    updated_categories = old_categories + additional_categories
+    num_old = len(old_categories)
+    num_total = len(updated_categories)
+    
+    # load the old model
     weights = ResNet50_Weights.DEFAULT
     model = models.resnet50(weights=weights)
     for param in model.parameters():
         param.requires_grad = False
-    num_classes = len(categories)
     in_features = model.fc.in_features
-    model.fc = nn.Linear(in_features, num_classes)
+    # create an fc layer for the old categories
+    old_fc = nn.Linear(in_features, num_old)
+    model.fc = old_fc
     model = model.to(DEVICE)
     model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
-
+    # create new fc layer with output dim = total updated categories
+    new_fc = nn.Linear(in_features, num_total)
+    # copy weights for old categories
+    with torch.no_grad():
+        new_fc.weight.data[:num_old] = model.fc.weight.data
+        new_fc.bias.data[:num_old] = model.fc.bias.data
+    # replace the fc layer in the model
+    model.fc = new_fc
+    
+    category_to_idx = {cat: idx for idx, cat in enumerate(updated_categories)}
+    
+    dataset = UpdateDataset(image_infos, category_to_idx, train_transforms)
+    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
+    
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.fc.parameters(), lr=LEARNING_RATE)
     print("Updating model with new user data...")
     model = train_model(model, dataloader, criterion, optimizer, NUM_EPOCHS)
-
+    
+    # save the updated model and update the training data hash
     torch.save(model.state_dict(), MODEL_PATH)
-    print(f"Model updated and saved in {ARTIFACTS_DIR}.")
+    current_hash = compute_training_data_hash(WORKING_DIR, updated_categories)
+    with open(TRAINING_DATA_HASH_PATH, "w") as f:
+        json.dump(current_hash, f)
+    print(f"Model updated and training data hash refreshed in {ARTIFACTS_DIR}.")
     return model
 
-def predict(image_file):
+def predict(image_data):
     """
-    Predict the category scores for a given image file.
-    Returns a dictionary mapping each category to a score (0–100).
+    Predict the category scores for a given image.
+    Accepts image_data which can be a base64 string, raw bytes, or a valid file path.
+    Loads the model from MODEL_PATH, processes the image, and returns a dictionary mapping
+    each category to a score (0–100).
     """
-    if not os.path.exists(CATEGORIES_PATH):
-        raise FileNotFoundError("Categories mapping file not found. Please run create_working_model first.")
-    with open(CATEGORIES_PATH, "r") as f:
+    if not os.path.exists(TRAINING_DATA_HASH_PATH):
+        raise FileNotFoundError("Hashed training data file not found. Please run create_working_model first.")
+    
+    with open(TRAINING_DATA_HASH_PATH, "r") as f:
         data = json.load(f)
     categories = data.get("categories", [])
     if not categories:
-        raise ValueError("No categories found in mapping.")
-
+        raise ValueError("No categories found in training data hash.")
+    
+    # set up the saved model
     weights = ResNet50_Weights.DEFAULT
     model = models.resnet50(weights=weights)
     for param in model.parameters():
@@ -242,81 +377,51 @@ def predict(image_file):
     model = model.to(DEVICE)
     model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
     model.eval()
-
-    image = load_image(image_file)
+    
+    image = process_image_input(image_data)
+    
     image_tensor = test_transforms(image).unsqueeze(0).to(DEVICE)
-
+    
     with torch.no_grad():
         outputs = model(image_tensor)
         probs = torch.softmax(outputs, dim=1).cpu().numpy()[0]
-
-    scores = {cat: float(round(prob * 100, 2)) for cat, prob in zip(categories, probs)}
+    
+    scores = {category: round(prob * 100, 2) for category, prob in zip(categories, probs)}
     return scores
 
+
 if __name__ == "__main__":
+
+    # test the model_manager functions with sample images
+
     import sys
     load_dotenv()
+    num_images = 8
 
-    working_dir = os.getenv("WORKING_DIR")
-    if working_dir is None:
+    sample_dir = os.getenv("SAMPLE_DIR")
+    if sample_dir is None:
         print("WORKING_DIR environment variable is not set.")
         sys.exit(1)
 
-    # Locate the input folder inside the working directory.
-    input_folder = os.path.join(working_dir, "input")
+    input_folder = os.path.join(sample_dir, "input")
     if not os.path.isdir(input_folder):
         print(f"Input folder '{input_folder}' not found in working directory.")
         sys.exit(1)
 
-    # Get the first three image files from the input folder.
     allowed_extensions = {".jpg", ".jpeg", ".png"}
     input_files = [f for f in os.listdir(input_folder)
                    if os.path.splitext(f)[1].lower() in allowed_extensions]
     if not input_files:
         print("No valid images found in the input folder.")
         sys.exit(1)
-    first_three_files = input_files[:3]
+    first_three_files = input_files[:min(num_images, len(input_files))]
 
-    # Loop over the three modes.
-    for current_mode in ["none", "mild", "heavy"]:
-        # Set the training transforms based on the current mode.
-        if current_mode == "none":
-            train_transforms = transforms.Compose([
-                transforms.Resize((224, 224)),
-                transforms.ToTensor(),
-                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-            ])
-        elif current_mode == "mild":
-            train_transforms = transforms.Compose([
-                transforms.Resize((224, 224)),
-                transforms.RandomHorizontalFlip(),
-                transforms.RandomRotation(degrees=10),
-                transforms.ToTensor(),
-                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-            ])
-        elif current_mode == "heavy":
-            train_transforms = transforms.Compose([
-                transforms.Resize((224, 224)),
-                transforms.RandomHorizontalFlip(),
-                transforms.RandomRotation(degrees=45),
-                transforms.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5),
-                transforms.RandomResizedCrop(224, scale=(0.8, 1.0)),
-                transforms.ToTensor(),
-                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-            ])
+    create_working_model(sample_dir)
 
-        print("\n" + "=" * 50)
-        print(f"Testing mode: {current_mode.upper()}")
-        print("=" * 50)
-
-        # Create the working model using the current training transforms.
-        create_working_model(working_dir)
-
-        # Run prediction for each of the first three images.
-        for file_name in first_three_files:
-            image_path = os.path.join(input_folder, file_name)
-            print(f"\nRunning prediction for image: {file_name}")
-            scores = predict(image_path)
-            print("Prediction scores:")
-            for category, score in scores.items():
-                print(f"  {category}: {score}%")
+    for file_name in first_three_files:
+        image_path = os.path.join(input_folder, file_name)
+        print(f"\nRunning prediction for image: {file_name}")
+        scores = predict(image_path)
+        print("Prediction scores:")
+        for category, score in scores.items():
+            print(f"  {category}: {score}%")

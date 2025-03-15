@@ -22,6 +22,6 @@ dist/
 # Environment
 .env
 
-# 
-model_artifacts/categories.json
-model_artifacts/model.pth
+# Data
+model_artifacts/*
+data/*
