@@ -20,7 +20,6 @@ CORS(app)
 load_dotenv()
 
 
-
 WORKING_DIR = os.getenv("WORKING_DIR")
 SAMPLE_DIR = os.getenv("SAMPLE_DIR")
 
@@ -118,7 +117,14 @@ def health_check():
 # @single_process
 def api_initialize_model_endpoint():
 
+    # clear global variables
+    global update_stack
+    global update_stack_dict
     global folders
+
+    update_stack = []
+    update_stack_dict = {}
+    folders = {}
 
     try:
         print("Initializing model (triggered by /initialize)...")
@@ -126,8 +132,6 @@ def api_initialize_model_endpoint():
         load_sample_data()
 
         create_working_model(WORKING_DIR)
-
-        folders = {}
 
         # process folders in the working directory
         for f in os.listdir(WORKING_DIR):
@@ -213,11 +217,9 @@ def api_add_to_stack():
     if not os.path.exists(source_path):
         return jsonify({"error": "Image not found in input folder"}), 404
     
-    # Prevent duplicate pending actions for the same image.
     if image_name in update_stack:
         return jsonify({"error": "Image already pending action"}), 400
 
-    # Append new pending action (predictions are recalculated on demand).
     update_stack.append(image_name)
     update_stack_dict[image_name] = target_folder
     folders[target_folder]["has_pending"] += 1
@@ -276,7 +278,7 @@ def api_manage_folder():
     if not operation or not folder_name:
         return jsonify({"error": "Operation and folder name required"}), 400
     
-    # prevent deletion of the 'input' or 'trash' folders.
+    # prevent deletion of the 'input' or 'trash' folders
     if operation == "delete" and (folder_name.lower() == "input" or folder_name.lower() == "trash"):
         return jsonify({"error": "Cannot delete the input or trash folder"}), 400
 
@@ -424,7 +426,7 @@ def api_commit_actions():
         except Exception as e:
             results["errors"].append(f"Error moving '{image_name}' to '{target_folder}': {str(e)}")
     
-    # Update with the newly committed images
+    # update with the newly committed images
     if new_committed:
         new_images = []
         for target_path in new_committed:
