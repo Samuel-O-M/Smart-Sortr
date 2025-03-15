@@ -7,13 +7,12 @@ WORKDIR /app
 # Copy package files first to leverage Docker cache for dependency installs
 COPY package*.json ./
 
-# Install dependencies
 RUN npm install
 
-# Copy the rest of the application code
 COPY . .
 
-# Build the app for production (Vite builds to the "dist" folder by default)
+ENV PORT=3001
+
 RUN npm run build
 
 # Install a lightweight static file server to serve the production build
