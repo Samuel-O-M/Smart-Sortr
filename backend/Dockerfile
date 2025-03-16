@@ -17,6 +17,3 @@ EXPOSE 5001
 
 # Set the command to run the Flask app
 CMD ["python", "app.py"]
-
-# docker build -t smart-sortr-backend .
-# docker run -p 5001:5001 -v "$(pwd)/data:/app/data" smart-sortr-backend

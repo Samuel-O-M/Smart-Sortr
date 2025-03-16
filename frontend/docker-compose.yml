@@ -1,6 +1,6 @@
-version: '3.8'
 services:
   frontend:
-    build: ./frontend
+    build: .
+    container_name: smart-sortr-frontend
     ports:
-      - "3000:3000"
+      - "3001:3001"

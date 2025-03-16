@@ -1,0 +1,12 @@
+version: '3'
+services:
+  backend:
+    build: ./backend
+    container_name: smart-sortr-backend
+    ports:
+      - "5001:5001"
+  frontend:
+    build: ./frontend
+    container_name: smart-sortr-frontend
+    ports:
+      - "3001:3001"
