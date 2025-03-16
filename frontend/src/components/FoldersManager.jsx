@@ -115,7 +115,7 @@ export default function FoldersBlock({
         </div>
       </div>
 
-      <style jsx>{`
+      <style jsx = "true">{`
         .hide-scrollbar::-webkit-scrollbar {
           display: none;
         }
