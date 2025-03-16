@@ -60,7 +60,7 @@ export default function ActionHistory({ actionHistory }) {
       </div>
 
       {/* Inline CSS to hide scrollbar */}
-      <style jsx>{`
+      <style jsx = "true">{`
         .hide-scrollbar::-webkit-scrollbar {
           display: none;
         }
