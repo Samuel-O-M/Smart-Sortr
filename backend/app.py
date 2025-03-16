@@ -129,6 +129,46 @@ def load_sample_data():
         except Exception as e:
             print(f"Error copying {source_item} to {dest_item}: {e}")
 
+def initialize_app():
+    """
+    Initializes the working directory:
+      - Loads sample data (clearing any previous data)
+      - Creates the working model
+      - Scans the working directory to populate the global folders variable
+      - Resets update stacks.
+    """
+    global update_stack, update_stack_dict, folders
+    update_stack = []
+    update_stack_dict = {}
+    folders = {}
+
+    print("Initializing model and working directory...")
+
+    load_sample_data()
+    create_working_model(WORKING_DIR)
+
+    # Process folders in the working directory
+    for f in os.listdir(WORKING_DIR):
+        folder_path = os.path.join(WORKING_DIR, f)
+        if os.path.isdir(folder_path) and f.lower() not in ['input', 'trash']:
+            is_empty = (len(os.listdir(folder_path)) == 0)
+            folders[f] = {
+                "is_empty": is_empty,
+                "has_pending": 0
+            }
+
+    # also add "input" and "trash" folders
+    folders["input"] = {
+        "is_empty": (len(os.listdir(INPUT_FOLDER)) == 0),
+        "has_pending": 0
+    }
+    folders["trash"] = {
+        "is_empty": (len(os.listdir(TRASH_FOLDER)) == 0),
+        "has_pending": 0
+    }
+
+# =================== API Endpoints ===================
+
 @app.route('/heartbeat', methods=['GET'])
 def heartbeat():
     global current_user
@@ -153,50 +193,12 @@ def hello_world():
 
 @app.route('/initialize', methods=['POST'])
 @require_connection
-# @single_process
 def api_initialize_model_endpoint():
-
-    # clear global variables
-    global update_stack
-    global update_stack_dict
-    global folders
-
-    update_stack = []
-    update_stack_dict = {}
-    folders = {}
-
     try:
-        print("Initializing model...")
-
-        load_sample_data()
-
-        create_working_model(WORKING_DIR)
-
-        # process folders in the working directory
-        for f in os.listdir(WORKING_DIR):
-            folder_path = os.path.join(WORKING_DIR, f)
-            if os.path.isdir(folder_path) and f.lower() not in ['input', 'trash']:
-                is_empty = (len(os.listdir(folder_path)) == 0)
-                folders[f] = {
-                    "is_empty": is_empty,
-                    "has_pending": 0
-                }
-
-        # also add "input" and "trash" folders
-        folders["input"] = {
-            "is_empty": (len(os.listdir(INPUT_FOLDER)) == 0),
-            "has_pending": 0
-        }
-        folders["trash"] = {
-            "is_empty": (len(os.listdir(TRASH_FOLDER)) == 0),
-            "has_pending": 0
-        }
-
+        initialize_app()
         return jsonify({"message": "Model initialization complete.", "folders": folders})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-# =================== API Endpoints ===================
 
 @app.route('/image_data', methods=['POST'])
 @require_connection
@@ -364,10 +366,11 @@ def api_get_current_image():
     global folders
 
     pending_set = set(update_stack)  # for O(1) tests
-
+    
     found = None
     with os.scandir(INPUT_FOLDER) as entries:
-        for entry in entries:
+        sorted_entries = sorted(entries, key=lambda entry: entry.name)
+        for entry in sorted_entries:
             if entry.is_file() and entry.name not in pending_set:
                 found = entry.name
                 break
@@ -421,10 +424,13 @@ def api_classify_image():
         if category.lower() == "input":
             continue
         if category in predictions:
-            full_predictions[category] = predictions[category]
+            try:
+                full_predictions[category] = round(float(predictions[category]), 2)
+            except Exception:
+                full_predictions[category] = predictions[category]
         else:
             full_predictions[category] = "N/A"
-    
+
     return jsonify({
         "predictions": full_predictions
     })
@@ -488,5 +494,6 @@ def api_commit_actions():
 
 
 if __name__ == '__main__':
+    initialize_app()
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
