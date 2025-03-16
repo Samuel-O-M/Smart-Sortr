@@ -17,7 +17,7 @@ export default function ProcessPanel({
         } text-white`}
       >
         <div className="w-full h-full overflow-y-auto hide-scrollbar flex flex-col items-center justify-start">
-          <pre className="text-center whitespace-pre-wrap m-0">
+          <pre className="text-center whitespace-pre-wrap m-0 text-sm">
             {processMessage || "No messages"}
           </pre>
         </div>
