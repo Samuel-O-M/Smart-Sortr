@@ -29,7 +29,7 @@ def require_connection(f):
                 return jsonify({"error": "No user token provided. Please call /heartbeat to register."}), 403
         else:
             if token != current_user["token"]:
-                return jsonify({"error": "Another user is already connected. Try again later."}), 429
+                return jsonify({"error": "Another user is currently connected. Try again later."}), 429
             else:
                 current_user["last_seen"] = time.time()
                 return f(*args, **kwargs)
@@ -37,7 +37,7 @@ def require_connection(f):
 
 
 # custom functions
-from model_manager import create_working_model, update_model, predict, TRAINING_DATA_HASH_PATH
+from model_manager import create_working_model, predict
 
 app = Flask(__name__)
 CORS(app)
@@ -142,7 +142,7 @@ def heartbeat():
         return jsonify({"message": "Heartbeat registered", "token": token})
     else:
         if token != current_user["token"]:
-            return jsonify({"error": "Another user is already connected. Try again later."}), 429
+            return jsonify({"error": "Another user is currently connected. Try again later."}), 429
         else:
             current_user["last_seen"] = time.time()
             return jsonify({"message": "Heartbeat updated", "token": token})
@@ -166,7 +166,7 @@ def api_initialize_model_endpoint():
     folders = {}
 
     try:
-        print("Initializing model (triggered by /initialize)...")
+        print("Initializing model...")
 
         load_sample_data()
 
@@ -445,12 +445,11 @@ def api_commit_actions():
     global folders
 
     results = {"moved": [], "errors": []}
-    new_committed = []
+    changes_made = False
     
     while update_stack:
 
         image_name = update_stack.pop()
-        image_data = get_image_data(os.path.join(INPUT_FOLDER, image_name))
         image_path = os.path.join(INPUT_FOLDER, image_name)
         target_folder = update_stack_dict[image_name]
         target_path = os.path.join(WORKING_DIR, target_folder, image_name)
@@ -467,28 +466,20 @@ def api_commit_actions():
             os.makedirs(os.path.join(WORKING_DIR, target_folder), exist_ok=True)
             shutil.move(image_path, target_path)
             results["moved"].append(image_name)
-            new_committed.append(target_path)
 
             folders[target_folder]["is_empty"] = False
+
+            changes_made = True
 
         except Exception as e:
             results["errors"].append(f"Error moving '{image_name}' to '{target_folder}': {str(e)}")
     
     # update with the newly committed images
-    if new_committed:
-        new_images = []
-        for target_path in new_committed:
-            image_data = get_image_data(target_path)
-            new_images.append({
-                "image_path": target_path,
-                "image_data": image_data,
-                "mime_type": "image/jpeg"
-            })
+    if changes_made:
         try:
-            non_empty_folders = {folder for folder in folders if not folders[folder]["is_empty"] and folder.lower() != "input"}
-            update_model(new_images, list(non_empty_folders))
+            create_working_model(WORKING_DIR)
         except Exception as e:
-            results["errors"].append(f"Error updating model: {str(e)}")
+            results["errors"].append(f"Error retraining model: {str(e)}")
     
     if results["errors"]:
         return jsonify({"error": "Errors occurred during commit.", "results": results}), 400

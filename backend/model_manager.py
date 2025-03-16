@@ -142,33 +142,7 @@ class CategoryDataset(Dataset):
         label = self.category_to_idx[category]
         return image, label
     
-class UpdateDataset(torch.utils.data.Dataset):
-    """
-    Dataset for new images provided via user feedback.
-    Assumes that the image path (the 'image_path' key) encodes the category via its parent folder name.
-    """
-    def __init__(self, image_infos, category_to_idx, transform):
-        self.image_infos = image_infos
-        self.category_to_idx = category_to_idx
-        self.transform = transform
 
-    def __len__(self):
-        return len(self.image_infos)
-
-    def __getitem__(self, idx):
-        info = self.image_infos[idx]
-        image_path = info["image_path"]
-        category = os.path.basename(os.path.dirname(image_path))
-        if category not in self.category_to_idx:
-            raise ValueError(f"Category '{category}' not found in known categories.")
-        image_data = info["image_data"]
-        # process image_data (expected to be base64 string) using helper
-        image = process_image_input(image_data)
-        if self.transform:
-            image = self.transform(image)
-        label = self.category_to_idx[category]
-        return image, label
-    
 def train_model(model, dataloader, criterion, optimizer, num_epochs):
     """
     Basic training loop.
@@ -281,74 +255,6 @@ def create_working_model(working_dir):
     print(f"Model and training data hash saved in {ARTIFACTS_DIR}.")
     return model
 
-def update_model(image_infos, new_categories):
-    """
-    Update the stored model with new user data.
-    
-    image_infos: a list of dictionaries with keys:
-        - "image_path": the image path (including category folder name)
-        - "image_data": base64-encoded image data
-        - "mime_type": e.g. "image/jpeg"
-        
-    new_categories: a list of nonempty folder names.
-      (old training categories are a subset of new categories)
-    """
-    import torch.nn as nn
-    from torchvision.models import ResNet50_Weights
-    from torch.utils.data import DataLoader
-
-    if not os.path.exists(TRAINING_DATA_HASH_PATH):
-        raise FileNotFoundError("Hashed training data file not found. Please run create_working_model first.")
-    with open(TRAINING_DATA_HASH_PATH, "r") as f:
-        data = json.load(f)
-    old_categories = data.get("categories", [])
-    if not old_categories:
-        raise ValueError("No categories found in training data hash.")
-    
-    # build updated category list: keep old categories first, then append any new ones (sorted).
-    new_categories = sorted(new_categories)
-    additional_categories = [cat for cat in new_categories if cat not in old_categories]
-    updated_categories = old_categories + additional_categories
-    num_old = len(old_categories)
-    num_total = len(updated_categories)
-    
-    # load the old model
-    weights = ResNet50_Weights.DEFAULT
-    model = models.resnet50(weights=weights)
-    for param in model.parameters():
-        param.requires_grad = False
-    in_features = model.fc.in_features
-    # create an fc layer for the old categories
-    old_fc = nn.Linear(in_features, num_old)
-    model.fc = old_fc
-    model = model.to(DEVICE)
-    model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
-    # create new fc layer with output dim = total updated categories
-    new_fc = nn.Linear(in_features, num_total)
-    # copy weights for old categories
-    with torch.no_grad():
-        new_fc.weight.data[:num_old] = model.fc.weight.data
-        new_fc.bias.data[:num_old] = model.fc.bias.data
-    # replace the fc layer in the model
-    model.fc = new_fc
-    
-    category_to_idx = {cat: idx for idx, cat in enumerate(updated_categories)}
-    
-    dataset = UpdateDataset(image_infos, category_to_idx, train_transforms)
-    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
-    
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.fc.parameters(), lr=LEARNING_RATE)
-    print("Updating model with new user data...")
-    model = train_model(model, dataloader, criterion, optimizer, NUM_EPOCHS)
-    
-    # save the updated model and update the training data hash
-    torch.save(model.state_dict(), MODEL_PATH)
-    current_hash = compute_training_data_hash(WORKING_DIR, updated_categories)
-    with open(TRAINING_DATA_HASH_PATH, "w") as f:
-        json.dump(current_hash, f)
-    print(f"Model updated and training data hash refreshed in {ARTIFACTS_DIR}.")
-    return model
 
 def predict(image_data):
     """

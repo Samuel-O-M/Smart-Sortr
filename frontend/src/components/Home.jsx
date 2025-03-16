@@ -44,10 +44,9 @@ export default function Home() {
       const res = await fetch(`${envBackendUrl}/heartbeat`);
       const data = await res.json();
       if (!res.ok) {
-        // Check for the "another user" error
         if (data.error && data.error.includes("Another user is currently connected")) {
-          console.error("Another user is currently connected");
-          appendLog("Another user is currently connected");
+          console.error("Another user is currently connected. Try again later.");
+          appendLog("Try again later\nAnother user is currently connected");
           setError("Another user is currently connected. Try again later.");
           return;
         } else {
@@ -78,10 +77,9 @@ export default function Home() {
       });
       const data = await res.json();
       if (!res.ok) {
-        // Check if the error indicates another user is connected
         if (data.error && data.error.includes("Another user is currently connected")) {
-          console.error("Another user is currently connected");
-          appendLog("Another user is currently connected");
+          console.error("Another user is currently connected. Try again later.");
+          appendLog("Try again later\nAnother user is currently connected");
           setError("Another user is currently connected. Try again later.");
           return;
         }
@@ -198,7 +196,6 @@ export default function Home() {
       setImage(data);
       console.log('Fetched image:', data.image_name);
       appendLog('Fetched image');
-      // After we have an image, classify it
       classifyImage(data.image_name);
     } catch (err) {
       console.error(err);
