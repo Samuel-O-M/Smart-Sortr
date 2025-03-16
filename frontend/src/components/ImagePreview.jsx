@@ -11,10 +11,10 @@ export default function ImagePreview({ image }) {
       const { clientWidth, clientHeight } = containerRef.current;
       if (clientWidth >= clientHeight) {
         // If width >= height, use 80% of the height
-        setSquareSize(clientHeight * 0.8);
+        setSquareSize(clientHeight * 0.9);
       } else {
         // If height > width, use 80% of the width
-        setSquareSize(clientWidth * 0.8);
+        setSquareSize(clientWidth * 0.9);
       }
     }
   };
