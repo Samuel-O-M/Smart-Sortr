@@ -21,9 +21,18 @@ export default function Home() {
   // New state variable to persist predictions
   const [predictions, setPredictions] = useState({});
 
+  // Helper to append log messages (new messages on top)
+  const appendLog = (msg) => {
+    setProcessMessage(prev => msg + "\n" + prev);
+  };
+
+  // Clear logs handler
+  const clearLogs = () => {
+    setProcessMessage('');
+  };
+
   // ================ Detect backend ================
   const detectBackend = async () => {
-    // Try port 5000, then 5001
     let url = '';
     try {
       const res = await fetch('http://127.0.0.1:5000/health');
@@ -42,8 +51,10 @@ export default function Home() {
     if (url) {
       setBackendUrl(url);
       console.log('Connected to backend on', url);
+      appendLog(`Connected to backend on ${url}`);
     } else {
       console.error('Backend not found on ports 5000 or 5001.');
+      appendLog('No backend found on ports 5000 or 5001');
       setError('No backend found on ports 5000 or 5001');
     }
   };
@@ -56,7 +67,7 @@ export default function Home() {
   const initializeModel = async () => {
     if (!backendUrl) return;
     setLoadingInit(true);
-    setProcessMessage('Initializing model...');
+    appendLog('Initializing model...');
     console.log('Initializing model...');
 
     try {
@@ -66,12 +77,13 @@ export default function Home() {
         throw new Error(err.error || 'Error initializing model');
       }
       console.log('Model initialized successfully.');
+      appendLog('Model initialized successfully');
     } catch (err) {
       console.error(err);
+      appendLog('Error initializing model');
       setError(err.message);
     } finally {
       setLoadingInit(false);
-      setProcessMessage('');
       // Fetch after successful init
       fetchFolders();
       fetchActionHistory();
@@ -88,13 +100,13 @@ export default function Home() {
 
   // ================ Fetch Folders ================
   const fetchFolders = async () => {
+    appendLog('Fetching folders...');
     try {
       const res = await fetch(`${backendUrl}/folders`);
       if (!res.ok) {
         throw new Error('Error fetching folder list');
       }
       const data = await res.json();
-      // Convert the object into an array of folder objects, preserving predictions
       const arr = Object.keys(data.folders).map((folderName) => {
         const f = data.folders[folderName];
         return {
@@ -107,14 +119,16 @@ export default function Home() {
       });
       setFolders(arr);
       console.log('Folders updated:', arr);
+      appendLog('Folders updated');
     } catch (err) {
       console.error(err);
+      appendLog('Error fetching folders');
     }
   };
 
   // ================ Fetch Current Image ================
   const fetchImage = async () => {
-    setProcessMessage('Fetching image...');
+    appendLog('Fetching image...');
     console.log('Fetching image...');
 
     try {
@@ -126,13 +140,13 @@ export default function Home() {
       const data = await res.json();
       setImage(data);
       console.log('Fetched image:', data.image_name);
+      appendLog('Fetched image');
       // After we have an image, classify it
       classifyImage(data.image_name);
     } catch (err) {
       console.error(err);
+      appendLog('Error fetching image');
       setImage(null);
-    } finally {
-      setProcessMessage('');
     }
   };
 
@@ -140,10 +154,10 @@ export default function Home() {
   const classifyImage = async (imageName) => {
     if (!imageName) return;
     setLoadingPrediction(true);
-    setProcessMessage('Classifying image...');
+    appendLog('Classifying image...');
     console.log('Classifying image:', imageName);
   
-    // Immediately update folders to show a placeholder prediction
+    // Update folders to show a placeholder prediction
     setFolders((prev) =>
       prev.map((fld) =>
         fld.name.toLowerCase() !== "input" ? { ...fld, prediction: "..." } : fld
@@ -161,9 +175,7 @@ export default function Home() {
         throw new Error(errData.error || 'Error classifying image');
       }
       const data = await res.json();
-      // Persist actual predictions
       setPredictions(data.predictions);
-      // Update folders with actual predictions where available
       setFolders((prev) =>
         prev.map((fld) => {
           if (data.predictions[fld.name] !== undefined) {
@@ -173,27 +185,30 @@ export default function Home() {
         })
       );
       console.log('Predictions:', data.predictions);
+      appendLog('Predictions updated');
     } catch (err) {
       console.error(err);
+      appendLog('Error classifying image');
     } finally {
       setLoadingPrediction(false);
-      setProcessMessage('');
     }
   };
     
   // ================ Fetch Action History ================
   const fetchActionHistory = async () => {
+    appendLog('Fetching action history...');
     try {
       const res = await fetch(`${backendUrl}/stack`);
       if (!res.ok) {
         throw new Error('Error fetching stack');
       }
       const data = await res.json();
-      // Assume each element is an object: { image_name, target_folder }
       setActionHistory(data.stack);
       console.log('Action history updated:', data.stack);
+      appendLog('Action history updated');
     } catch (err) {
       console.error(err);
+      appendLog('Error fetching action history');
     }
   };
 
@@ -207,9 +222,11 @@ export default function Home() {
         body: JSON.stringify({ operation: 'create', folder_name: folderName })
       });
       console.log(`Folder "${folderName}" created.`);
+      appendLog(`Folder created: ${folderName}`);
       fetchFolders();
     } catch (err) {
       console.error(err);
+      appendLog('Error creating folder');
     }
   };
   
@@ -226,9 +243,11 @@ export default function Home() {
         throw new Error(err.error || 'Error deleting folder');
       }
       console.log(`Folder "${folderName}" deleted.`);
+      appendLog(`Folder deleted: ${folderName}`);
       fetchFolders();
     } catch (err) {
       console.error(err);
+      appendLog('Error deleting folder');
     }
   };
 
@@ -245,18 +264,17 @@ export default function Home() {
         throw new Error(err.error || 'Error adding action');
       }
       console.log(`Pending action: ${image.image_name} -> ${folderName}`);
-      // Combine current image object with the target folder:
+      appendLog(`New pending action`);
       const newAction = { ...image, target_folder: folderName };
       setActionHistory((prev) => [...prev, newAction]);
-      // Refresh the image and folders (actionHistory is already updated locally)
       fetchImage();    
       fetchFolders();
     } catch (err) {
       console.error(err);
+      appendLog('Error processing folder action');
     }
   };
   
-
   // ================ Undo and Commit Handlers ================
   const handleUndo = async () => {
     try {
@@ -266,57 +284,61 @@ export default function Home() {
         throw new Error(err.error || 'Error undoing action');
       }
       console.log('Undo performed.');
-      // Pop the last action from the local actionHistory state
+      appendLog('Undo performed');
       setActionHistory((prev) => prev.slice(0, -1));
-      // Refresh folders and get the next image
       fetchFolders();
       fetchImage();
     } catch (err) {
       console.error(err);
+      appendLog('Error undoing action');
     }
   };
 
   const handleCommit = async () => {
+    if (actionHistory.length === 0) {
+      appendLog('Error: No actions to commit');
+      return;
+    }
     setLoadingCommit(true);
-    setProcessMessage('Committing...');
+    appendLog('Committing all pending actions...');
     console.log('Committing all pending actions...');
-  
+    
     try {
       const res = await fetch(`${backendUrl}/commit`, { method: 'POST' });
       const data = await res.json();
   
       if (!res.ok) {
-        console.error("Commit error:", data.error, data.results);
+        console.error("Commit error:", data.error);
+        appendLog('Error committing actions');
       } else {
-        console.log("Commit succeeded:", data.message, data.results);
+        console.log("Commit succeeded:", data.message);
+        appendLog('Commit succeeded');
       }
       
-      // Sequentially update state after commit is fully finished.
       await fetchActionHistory();
       await fetchFolders();
       await fetchImage();
     } catch (err) {
       console.error(err);
+      appendLog('Error committing actions');
     } finally {
       setLoadingCommit(false);
-      setProcessMessage('');
     }
   };
-
+  
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden">
-
       <div className="h-[14%]">
         <Header />
       </div>
   
       <div className="h-[64%] flex overflow-hidden">
-
         <div className="w-[25%]">
           <ProcessPanel
             processMessage={processMessage}
-            onUndo={handleUndo}
             onCommit={handleCommit}
+            onUndo={handleUndo}
+            onClear={clearLogs}
             loadingCommit={loadingCommit}
             loadingInit={loadingInit}
             loadingPrediction={loadingPrediction}
@@ -330,7 +352,6 @@ export default function Home() {
         <div className="w-[25%]">
           <ActionHistory actionHistory={actionHistory} />
         </div>
-        
       </div>
   
       <div className="h-[22%]">
@@ -343,5 +364,4 @@ export default function Home() {
       </div>
     </div>
   );
-
 }
