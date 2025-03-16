@@ -9,6 +9,32 @@ from dotenv import load_dotenv
 import platform
 import threading
 from functools import wraps
+import time
+import uuid
+
+current_user = None
+HEARTBEAT_TIMEOUT = 30
+
+def require_connection(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        global current_user
+        token = request.headers.get("X-User-Token")
+        if current_user is not None and (time.time() - current_user["last_seen"]) > HEARTBEAT_TIMEOUT:
+            current_user = None
+        if current_user is None:
+            if token:
+                return jsonify({"error": "User token expired. Please call /heartbeat to register."}), 403
+            else:
+                return jsonify({"error": "No user token provided. Please call /heartbeat to register."}), 403
+        else:
+            if token != current_user["token"]:
+                return jsonify({"error": "Another user is already connected. Try again later."}), 429
+            else:
+                current_user["last_seen"] = time.time()
+                return f(*args, **kwargs)
+    return wrapper
+
 
 # custom functions
 from model_manager import create_working_model, update_model, predict, TRAINING_DATA_HASH_PATH
@@ -103,17 +129,30 @@ def load_sample_data():
         except Exception as e:
             print(f"Error copying {source_item} to {dest_item}: {e}")
 
-# =================== Initial Endpoints ===================
+@app.route('/heartbeat', methods=['GET'])
+def heartbeat():
+    global current_user
+    token = request.headers.get("X-User-Token")
+    if current_user is not None and (time.time() - current_user["last_seen"]) > HEARTBEAT_TIMEOUT:
+        current_user = None
+    if current_user is None:
+        if not token:
+            token = str(uuid.uuid4())
+        current_user = {"token": token, "last_seen": time.time()}
+        return jsonify({"message": "Heartbeat registered", "token": token})
+    else:
+        if token != current_user["token"]:
+            return jsonify({"error": "Another user is already connected. Try again later."}), 429
+        else:
+            current_user["last_seen"] = time.time()
+            return jsonify({"message": "Heartbeat updated", "token": token})
 
 @app.route('/')
 def hello_world():
     return 'Hello, World!'
 
-@app.route('/health', methods=['GET'])
-def health_check():
-    return jsonify({"status": "Backend is up and running"})
-
 @app.route('/initialize', methods=['POST'])
+@require_connection
 # @single_process
 def api_initialize_model_endpoint():
 
@@ -160,6 +199,7 @@ def api_initialize_model_endpoint():
 # =================== API Endpoints ===================
 
 @app.route('/image_data', methods=['POST'])
+@require_connection
 # @single_process
 def api_get_image_data():
     """
@@ -183,6 +223,7 @@ def api_get_image_data():
     })
 
 @app.route('/stack', methods=['GET'])
+@require_connection
 # @single_process
 def api_get_stack():
     """
@@ -191,6 +232,7 @@ def api_get_stack():
     return jsonify({"stack": update_stack})
 
 @app.route('/update', methods=['POST'])
+@require_connection
 # @single_process
 def api_add_to_stack():
     """
@@ -229,6 +271,7 @@ def api_add_to_stack():
     })
 
 @app.route('/undo', methods=['POST'])
+@require_connection
 # @single_process
 def api_pop_from_stack():
     """
@@ -255,6 +298,7 @@ def api_pop_from_stack():
     )
 
 @app.route('/folders', methods=['GET'])
+@require_connection
 # @single_process
 def api_get_folders():
     """
@@ -264,6 +308,7 @@ def api_get_folders():
     return jsonify({"folders": folders})
 
 @app.route('/folder', methods=['POST'])
+@require_connection
 # @single_process
 def api_manage_folder():
     """
@@ -309,6 +354,7 @@ def api_manage_folder():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/current_image', methods=['GET'])
+@require_connection
 # @single_process
 def api_get_current_image():
     """
@@ -341,6 +387,7 @@ def api_get_current_image():
     })
 
 @app.route('/classify', methods=['POST'])
+@require_connection
 # @single_process
 def api_classify_image():
     """
@@ -383,6 +430,7 @@ def api_classify_image():
     })
 
 @app.route('/commit', methods=['POST'])
+@require_connection
 # # @single_process
 def api_commit_actions():
     """

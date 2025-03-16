@@ -8,6 +8,7 @@ import FoldersManager from './FoldersManager';
 export default function Home() {
   // ================ State variables ================
   const [backendUrl, setBackendUrl] = useState('');
+  const [userToken, setUserToken] = useState(null);
   const [image, setImage] = useState(null); // { image_name, image_data, mime_type }
   const [actionHistory, setActionHistory] = useState([]); 
   const [folders, setFolders] = useState([]); // each folder: { name, is_empty, has_pending, can_delete, prediction }
@@ -33,45 +34,97 @@ export default function Home() {
 
   // ================ Detect backend ================
   const detectBackend = async () => {
-    let url = '';
-    try {
-      const res = await fetch('http://127.0.0.1:5000/health');
-      if (res.ok) {
-        url = 'http://127.0.0.1:5000';
-      }
-    } catch (err) {}
-    if (!url) {
-      try {
-        const res = await fetch('http://127.0.0.1:5001/health');
-        if (res.ok) {
-          url = 'http://127.0.0.1:5001';
-        }
-      } catch (err) {}
+    const envBackendUrl = import.meta.env.VITE_BACKEND_URL;
+    if (!envBackendUrl) {
+      setError("No backend URL provided in .env");
+      appendLog("No backend URL provided in .env");
+      return;
     }
-    if (url) {
-      setBackendUrl(url);
-      console.log('Connected to backend on', url);
-      appendLog(`Connected to backend on ${url}`);
-    } else {
-      console.error('Backend not found on ports 5000 or 5001.');
-      appendLog('No backend found on ports 5000 or 5001');
-      setError('No backend found on ports 5000 or 5001');
+    try {
+      const res = await fetch(`${envBackendUrl}/heartbeat`);
+      const data = await res.json();
+      if (!res.ok) {
+        // Check for the "another user" error
+        if (data.error && data.error.includes("Another user is currently connected")) {
+          console.error("Another user is currently connected");
+          appendLog("Another user is currently connected");
+          setError("Another user is currently connected. Try again later.");
+          return;
+        } else {
+          console.error("Backend did not respond properly");
+          appendLog("Backend did not respond properly");
+          setError("Backend did not respond properly");
+          return;
+        }
+      }
+      // Successful connection
+      setBackendUrl(envBackendUrl);
+      if (data.token) setUserToken(data.token);
+      console.log("Connected to backend on", envBackendUrl);
+      appendLog(`Connected to backend on ${envBackendUrl}`);
+    } catch (err) {
+      console.error("Error connecting to backend", err);
+      appendLog("Error connecting to backend");
+      setError("Error connecting to backend");
     }
   };
-
+      
+  // ================ Heartbeat ================
+  const sendHeartbeat = async () => {
+    if (!backendUrl) return;
+    try {
+      const res = await fetch(`${backendUrl}/heartbeat`, {
+        headers: { "X-User-Token": userToken ? userToken : "" }
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        // Check if the error indicates another user is connected
+        if (data.error && data.error.includes("Another user is currently connected")) {
+          console.error("Another user is currently connected");
+          appendLog("Another user is currently connected");
+          setError("Another user is currently connected. Try again later.");
+          return;
+        }
+      }
+      if (res.ok && data.token) {
+        setUserToken(data.token);
+      }
+    } catch (err) {
+      console.error("Heartbeat error:", err);
+      appendLog("Heartbeat error occurred");
+    }
+  };
+  
   useEffect(() => {
     detectBackend();
   }, []);
 
+  useEffect(() => {
+    if (backendUrl) {
+      let intervalId;
+      const timeoutId = setTimeout(() => {
+        sendHeartbeat();
+        intervalId = setInterval(sendHeartbeat, 10000);
+      }, 5000);
+      return () => {
+        clearTimeout(timeoutId);
+        if (intervalId) clearInterval(intervalId);
+      };
+    }
+  }, [backendUrl, userToken]);
+    
   // ================ Initialize model ================
   const initializeModel = async () => {
-    if (!backendUrl) return;
+    if (!backendUrl || !userToken) return;
     setLoadingInit(true);
     appendLog('Initializing model...');
     console.log('Initializing model...');
 
     try {
-      const res = await fetch(`${backendUrl}/initialize`, { method: 'POST' });
+      const res = await fetch(`${backendUrl}/initialize`, { 
+        method: 'POST',
+        headers: { "X-User-Token": userToken }
+      });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || 'Error initializing model');
@@ -91,18 +144,20 @@ export default function Home() {
     }
   };
 
-  // Auto-run initialization after we find the backend
+  // Auto-run initialization after we find the backend and token
   useEffect(() => {
-    if (backendUrl) {
+    if (backendUrl && userToken) {
       initializeModel();
     }
-  }, [backendUrl]);
+  }, [backendUrl, userToken]);
 
   // ================ Fetch Folders ================
   const fetchFolders = async () => {
     appendLog('Fetching folders...');
     try {
-      const res = await fetch(`${backendUrl}/folders`);
+      const res = await fetch(`${backendUrl}/folders`, {
+        headers: { "X-User-Token": userToken }
+      });
       if (!res.ok) {
         throw new Error('Error fetching folder list');
       }
@@ -132,7 +187,9 @@ export default function Home() {
     console.log('Fetching image...');
 
     try {
-      const res = await fetch(`${backendUrl}/current_image`);
+      const res = await fetch(`${backendUrl}/current_image`, {
+        headers: { "X-User-Token": userToken }
+      });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || 'No image found in input folder');
@@ -167,7 +224,7 @@ export default function Home() {
     try {
       const res = await fetch(`${backendUrl}/classify`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', "X-User-Token": userToken },
         body: JSON.stringify({ image_name: imageName })
       });
       if (!res.ok) {
@@ -198,7 +255,9 @@ export default function Home() {
   const fetchActionHistory = async () => {
     appendLog('Fetching action history...');
     try {
-      const res = await fetch(`${backendUrl}/stack`);
+      const res = await fetch(`${backendUrl}/stack`, {
+        headers: { "X-User-Token": userToken }
+      });
       if (!res.ok) {
         throw new Error('Error fetching stack');
       }
@@ -218,7 +277,7 @@ export default function Home() {
     try {
       const res = await fetch(`${backendUrl}/folder`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', "X-User-Token": userToken },
         body: JSON.stringify({ operation: 'create', folder_name: folderName })
       });
       console.log(`Folder "${folderName}" created.`);
@@ -235,7 +294,7 @@ export default function Home() {
     try {
       const res = await fetch(`${backendUrl}/folder`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', "X-User-Token": userToken },
         body: JSON.stringify({ operation: 'delete', folder_name: folderName })
       });
       if (!res.ok) {
@@ -256,7 +315,7 @@ export default function Home() {
     try {
       const res = await fetch(`${backendUrl}/update`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', "X-User-Token": userToken },
         body: JSON.stringify({ image_name: image.image_name, target_folder: folderName })
       });
       if (!res.ok) {
@@ -278,7 +337,10 @@ export default function Home() {
   // ================ Undo and Commit Handlers ================
   const handleUndo = async () => {
     try {
-      const res = await fetch(`${backendUrl}/undo`, { method: 'POST' });
+      const res = await fetch(`${backendUrl}/undo`, { 
+        method: 'POST',
+        headers: { "X-User-Token": userToken }
+      });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || 'Error undoing action');
@@ -304,7 +366,10 @@ export default function Home() {
     console.log('Committing all pending actions...');
     
     try {
-      const res = await fetch(`${backendUrl}/commit`, { method: 'POST' });
+      const res = await fetch(`${backendUrl}/commit`, { 
+        method: 'POST',
+        headers: { "X-User-Token": userToken }
+      });
       const data = await res.json();
   
       if (!res.ok) {
